@@ -78,18 +78,69 @@ function analyzeSpectrum(data,sr){
 }
 function dft(frame,k){let re=0,im=0;for(let n=0;n<frame.length;n++){const a=2*Math.PI*k*n/frame.length;re+=frame[n]*Math.cos(a);im-=frame[n]*Math.sin(a)}return Math.hypot(re,im)}
 function estimateKey(samples,sr){
- const size=4096, step=2048,total=Math.min(samples.length,Math.floor(sr*90)),sum=new Float64Array(12);let count=0;
- for(let start=0;start+size<total;start+=step){const frame=samples.slice(start,start+size);const chroma=new Float64Array(12);
-  for(let k=1;k<Math.floor(1400*size/sr);k++){const h=k*sr/size;if(h<70)continue;const m=dft(frame,k);if(m<0.5)continue;chroma[midiToPc(hzToMidi(h))]+=m}
-  for(let i=0;i<12;i++)sum[i]+=chroma[i];count++;if(count>=40)break;
+ // Modo "voz/tom": reduz ruído, transientes e graves não-harmônicos antes de montar o perfil de notas.
+ const size=4096, step=2048, maxSec=Math.min(90,samples.length/sr), total=Math.floor(maxSec*sr);
+ const sum=new Float64Array(12), frameScores=[];
+ const hann=i=>0.5*(1-Math.cos(2*Math.PI*i/(size-1)));
+ const median=a=>{if(!a.length)return 0;const b=[...a].sort((x,y)=>x-y);return b[Math.floor(b.length/2)]};
+ for(let start=0;start+size<total;start+=step){
+  const frame=samples.subarray(start,start+size);
+  let rms=0, zc=0, prev=frame[0]||0;
+  for(let i=0;i<size;i++){const v=frame[i]*hann(i);rms+=v*v;if(i&&((v>=0)!==(prev>=0)))zc++;prev=v}
+  rms=Math.sqrt(rms/size);
+  if(rms<0.008)continue;
+  // Voz/melodia tende a ter pitch estável; ruído e percussão têm mais cruzamentos de zero.
+  const zcr=zc/size;
+  if(zcr>0.22)continue;
+  const chroma=new Float64Array(12);
+  const limit=Math.min(Math.floor(1200*size/sr),size/2-1);
+  for(let k=1;k<=limit;k++){
+   const h=k*sr/size;
+   if(h<75||h>1200)continue;
+   let re=0,im=0;
+   for(let n=0;n<size;n+=4){
+    const v=frame[n]*hann(n),a=2*Math.PI*k*n/size;
+    re+=v*Math.cos(a); im-=v*Math.sin(a);
+   }
+   const mag=Math.hypot(re,im);
+   if(!mag)continue;
+   const midi=hzToMidi(h), pc=midiToPc(midi), frac=Math.abs(midi-Math.round(midi));
+   // favorece parciais próximos de notas reais e penaliza frequências muito altas.
+   const noteWeight=Math.max(0,1-frac*3), freqWeight=1/Math.sqrt(1+h/500);
+   chroma[pc]+=mag*noteWeight*freqWeight;
+  }
+  const tonal=chroma.reduce((a,b)=>a+b,0);
+  if(!tonal)continue;
+  frameScores.push({chroma,score:tonal});
  }
- let best=-Infinity,bestKey="C",bestScore=0,totalEnergy=sum.reduce((a,b)=>a+b,0)||1;
+ if(!frameScores.length)return {key:"—",confidence:0};
+ // Usa somente os quadros mais tonais: isso reduz fala, batidas, ruído ambiente e silêncio.
+ frameScores.sort((a,b)=>b.score-a.score);
+ const keep=frameScores.slice(0,Math.max(8,Math.ceil(frameScores.length*.35)));
+ for(const f of keep)for(let i=0;i<12;i++)sum[i]+=f.chroma[i]*(f.score/(keep[0].score||1));
+ const totalEnergy=sum.reduce((a,b)=>a+b,0)||1;
+ const candidates=[];
  for(let root=0;root<12;root++)for(const [mode,scale] of [["",MAJOR],["m",MINOR]]){
-  let inScale=0,out=0;for(let i=0;i<12;i++){const rel=(i-root+12)%12;if(scale.includes(rel))inScale+=sum[i];else out+=sum[i]}
-  const score=inScale-out*.7;if(score>best){best=score;bestKey=NOTE_NAMES[root]+mode;bestScore=Math.max(0,Math.min(1,(inScale/totalEnergy-out/totalEnergy+1)/2))}
+  let inside=0,outside=0,tonic=0,dominant=0,third=0;
+  for(let i=0;i<12;i++){
+   const rel=(i-root+12)%12;
+   if(scale.includes(rel))inside+=sum[i]; else outside+=sum[i];
+   if(rel===0)tonic+=sum[i];
+   if(rel===7)dominant+=sum[i];
+   if(rel===(mode?3:4))third+=sum[i];
+  }
+  // Perfil ponderado: tônica + dominante + terça ajudam a diferenciar tons relativos.
+  const score=(inside-outside*.65)+tonic*.35+dominant*.18+third*.12;
+  candidates.push({key:NOTE_NAMES[root]+mode,score});
  }
- return {key:bestKey,confidence:Math.round(bestScore*100)};
+ candidates.sort((a,b)=>b.score-a.score);
+ const best=candidates[0], second=candidates[1]||best;
+ const spread=Math.max(0,best.score-second.score)/(Math.abs(best.score)||1);
+ const energy=Math.min(1, best.score/(totalEnergy||1));
+ const confidence=Math.round(Math.max(35,Math.min(96,35+spread*180+energy*35)));
+ return {key:best.key,confidence};
 }
+
 function estimateBpm(samples,sr){
  const maxSeconds=Math.min(75,samples.length/sr),n=Math.floor(maxSeconds*sr),hop=1024;
  const env=[];for(let i=0;i+hop<n;i+=hop){let s=0;for(let j=0;j<hop;j+=4){const v=samples[i+j];s+=v*v}env.push(Math.sqrt(s/(hop/4)))}
