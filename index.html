@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#101713">
+<title>Cifraê — V5 Real</title>
+<style>
+:root{font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#f5f8f5;background:#101713}
+*{box-sizing:border-box}body{margin:0}main{max-width:860px;margin:auto;padding:22px 18px 70px}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:36px}
+.logo{font-size:31px;font-weight:900;letter-spacing:-1.8px}.logo span{color:#7aef9b}
+.pill{border:1px solid #37503d;border-radius:30px;padding:7px 12px;color:#a8c6af;font-size:12px}
+h1{font-size:clamp(34px,8vw,58px);letter-spacing:-2.5px;line-height:1.02;margin:0 0 12px}
+p{color:#b1c3b5;line-height:1.5}.accent{color:#7aef9b}
+.panel{background:#1b2720;border:1px solid #304638;border-radius:22px;padding:22px;margin:20px 0}
+.upload{border:2px dashed #47674f;text-align:center;cursor:pointer;padding:35px 15px;border-radius:17px;display:block;background:#202f25}
+.upload strong{display:block;font-size:19px;margin:10px 0}.upload small{color:#afc7b5}
+input[type=file]{display:none}button{border:0;border-radius:12px;padding:14px 18px;background:#7aef9b;color:#102116;font-weight:800;cursor:pointer;font-size:15px}
+button:disabled{opacity:.45;cursor:not-allowed}.secondary{background:#304738;color:#f2fff5}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+audio{width:100%;margin:18px 0 4px}h2{font-size:21px;margin:0 0 12px}#fileName{overflow-wrap:anywhere;color:#e5f5e9}
+#status{font-size:14px;color:#a8c6af;min-height:22px}#result{display:none}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.stat{background:#26382b;border-radius:14px;padding:14px}
+.stat small{color:#b5cbb9;display:block}.stat strong{font-size:25px;display:block;margin-top:3px}
+.chords{display:flex;flex-wrap:wrap;gap:9px;margin:16px 0}.chord{background:#344d3a;color:#d7ffe0;border-radius:10px;padding:11px 15px;font-weight:850;font-size:18px}
+.conf{display:inline-block;padding:5px 9px;border-radius:999px;background:#203b29;color:#9ff3b4;font-size:12px;font-weight:800}
+.notice{font-size:13px;color:#b7c7b9;border-left:3px solid #7aef9b;padding-left:12px}
+.progress{height:8px;background:#26382b;border-radius:999px;overflow:hidden;margin:12px 0}.bar{height:100%;width:0;background:#7aef9b;transition:width .15s}
+.footer{font-size:12px;color:#809b87;margin-top:35px}
+@media(max-width:520px){.stats{grid-template-columns:1fr 1fr}.stats .stat:last-child{grid-column:span 2}.panel{padding:17px}}
+</style>
+</head>
+<body><main>
+<header><div class="logo">cifra<span>ê</span> ♪</div><div class="pill">V5 · análise local</div></header>
+<h1>Da sua voz<br>para a <span class="accent">sua cifra.</span></h1>
+<p>Carregue uma música e obtenha uma estimativa local de <b>tom, BPM e acordes</b>. O processamento acontece no navegador.</p>
+<section class="panel">
+<label class="upload" for="file">🎵<strong>Escolher áudio ou vídeo</strong><small>MP3, WAV, M4A, MP4 e outros formatos compatíveis com o navegador</small></label>
+<input id="file" type="file" accept="audio/*,video/*">
+<p id="fileName">Nenhum arquivo selecionado.</p>
+<audio id="player" controls preload="metadata" style="display:none"></audio>
+<div class="actions"><button id="analyze" disabled>Analisar música</button><button class="secondary" id="clear" disabled>Limpar</button></div>
+<div class="progress"><div class="bar" id="bar"></div></div><p id="status" role="status">Selecione uma música para começar.</p>
+</section>
+<section id="result" class="panel">
+<h2>Análise concluída ✓</h2>
+<div class="stats">
+<div class="stat"><small>Tom estimado</small><strong id="key">—</strong><span id="keyConf" class="conf">—</span></div>
+<div class="stat"><small>BPM estimado</small><strong id="bpm">—</strong><span id="bpmConf" class="conf">—</span></div>
+<div class="stat"><small>Duração</small><strong id="duration">—</strong><span class="conf">arquivo</span></div>
+</div>
+<h2 style="margin-top:25px">Progressão provável</h2>
+<div id="chords" class="chords"></div>
+<p class="notice">Os resultados são estimativas DSP feitas no dispositivo. A confiança indica a força do sinal analisado; não substitui uma transcrição musical profissional.</p>
+</section>
+<div class="footer">Cifraê V5 Real · processamento local · nenhum áudio é enviado por este protótipo.</div>
+</main>
+<script>
+const $=id=>document.getElementById(id),file=$("file"),player=$("player"),btn=$("analyze"),clear=$("clear"),status=$("status"),bar=$("bar"),result=$("result");
+let objectUrl=null;
+const NOTE_NAMES=["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const MAJOR=[0,2,4,5,7,9,11], MINOR=[0,2,3,5,7,8,10];
+
+file.addEventListener("change",()=>{
+ const f=file.files?.[0]; result.style.display="none"; bar.style.width="0%";
+ if(objectUrl)URL.revokeObjectURL(objectUrl);
+ if(!f){player.style.display="none";btn.disabled=true;clear.disabled=true;status.textContent="Selecione uma música para começar.";return}
+ objectUrl=URL.createObjectURL(f);player.src=objectUrl;player.style.display="block";btn.disabled=false;clear.disabled=false;
+ $("fileName").textContent=f.name+" · "+(f.size/1048576).toFixed(1)+" MB";status.textContent="Arquivo carregado. Reproduza ou inicie a análise.";
+});
+clear.addEventListener("click",()=>{if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=null;file.value="";player.pause();player.removeAttribute("src");player.load();player.style.display="none";btn.disabled=true;clear.disabled=true;result.style.display="none";bar.style.width="0%";$("fileName").textContent="Nenhum arquivo selecionado.";status.textContent="Selecione uma música para começar.";});
+function hzToMidi(h){return 69+12*Math.log2(h/440)}
+function midiToPc(m){return ((Math.round(m)%12)+12)%12}
+function analyzeSpectrum(data,sr){
+ const n=data.length, chroma=new Float64Array(12), mag=[];
+ for(let i=1;i<n/2;i++){const re=data[i*2]||0,im=data[i*2+1]||0,m=Math.hypot(re,im);if(!m)continue;const h=i*sr/n;if(h<70||h>1400)continue;const pc=midiToPc(hzToMidi(h));chroma[pc]+=m;mag.push([h,m])}
+ return {chroma,mag};
+}
+function dft(frame,k){let re=0,im=0;for(let n=0;n<frame.length;n++){const a=2*Math.PI*k*n/frame.length;re+=frame[n]*Math.cos(a);im-=frame[n]*Math.sin(a)}return Math.hypot(re,im)}
+function estimateKey(samples,sr){
+ const size=4096, step=2048,total=Math.min(samples.length,Math.floor(sr*90)),sum=new Float64Array(12);let count=0;
+ for(let start=0;start+size<total;start+=step){const frame=samples.slice(start,start+size);const chroma=new Float64Array(12);
+  for(let k=1;k<Math.floor(1400*size/sr);k++){const h=k*sr/size;if(h<70)continue;const m=dft(frame,k);if(m<0.5)continue;chroma[midiToPc(hzToMidi(h))]+=m}
+  for(let i=0;i<12;i++)sum[i]+=chroma[i];count++;if(count>=40)break;
+ }
+ let best=-Infinity,bestKey="C",bestScore=0,totalEnergy=sum.reduce((a,b)=>a+b,0)||1;
+ for(let root=0;root<12;root++)for(const [mode,scale] of [["",MAJOR],["m",MINOR]]){
+  let inScale=0,out=0;for(let i=0;i<12;i++){const rel=(i-root+12)%12;if(scale.includes(rel))inScale+=sum[i];else out+=sum[i]}
+  const score=inScale-out*.7;if(score>best){best=score;bestKey=NOTE_NAMES[root]+mode;bestScore=Math.max(0,Math.min(1,(inScale/totalEnergy-out/totalEnergy+1)/2))}
+ }
+ return {key:bestKey,confidence:Math.round(bestScore*100)};
+}
+function estimateBpm(samples,sr){
+ const maxSeconds=Math.min(75,samples.length/sr),n=Math.floor(maxSeconds*sr),hop=1024;
+ const env=[];for(let i=0;i+hop<n;i+=hop){let s=0;for(let j=0;j<hop;j+=4){const v=samples[i+j];s+=v*v}env.push(Math.sqrt(s/(hop/4)))}
+ const onset=[];for(let i=1;i<env.length;i++)onset.push(Math.max(0,env[i]-env[i-1]));
+ const minLag=Math.floor(60*sr/(180*hop)),maxLag=Math.ceil(60*sr/(60*hop));let best=-1,bestLag=0;
+ for(let lag=minLag;lag<=maxLag;lag++){let score=0;for(let i=lag;i<onset.length;i++)score+=onset[i]*onset[i-lag];if(score>best){best=score;bestLag=lag}}
+ if(!bestLag)return {bpm:null,confidence:0};let bpm=60*sr/(bestLag*hop);
+ while(bpm<70)bpm*=2;while(bpm>180)bpm/=2;
+ const confidence=Math.round(Math.min(99,Math.max(35,best/(onset.reduce((a,b)=>a+b*b,0)||1)*10000)));
+ return {bpm:Math.round(bpm),confidence};
+}
+function estimateChords(samples,sr,key){
+ const roots=[];const rootPc=NOTE_NAMES.indexOf(key.replace("m",""));const minor=key.endsWith("m");
+ const scale=minor?MINOR:MAJOR;const degrees=minor?[0,3,5,7,10,8,3]:[0,2,4,5,7,9,11];
+ const names=degrees.map((d,i)=>{const pc=(rootPc+d)%12;const minorChord=minor?[false,true,false,false,true,false,true][i]:[false,false,true,false,false,true,true][i];return NOTE_NAMES[pc]+(minorChord?"m":"")});
+ const size=4096;const chunks=Math.min(8,Math.floor(samples.length/(sr*4)));
+ for(let c=0;c<chunks;c++){const start=Math.floor(c*samples.length/chunks),frame=samples.slice(start,start+size);let best=-1,idx=0;
+  for(let r=0;r<12;r++){const tri=[r,(r+4)%12,(r+7)%12];let score=0;for(const pc of tri){let acc=0;for(let k=1;k<Math.min(900*size/sr,size/2);k+=2){const h=k*sr/size;const p=midiToPc(hzToMidi(h));if(p===pc)acc+=dft(frame,k)}score+=acc}if(score>best){best=score;idx=r}}
+  roots.push(NOTE_NAMES[idx]);
+ }
+ return [...new Set(roots)].slice(0,6);
+}
+btn.addEventListener("click",async()=>{
+ const f=file.files?.[0];if(!f)return;btn.disabled=true;status.textContent="Lendo áudio e preparando o sinal...";bar.style.width="12%";result.style.display="none";
+ try{
+  const ctx=new (window.AudioContext||window.webkitAudioContext)();const raw=await f.arrayBuffer();bar.style.width="28%";const decoded=await ctx.decodeAudioData(raw);
+  const src=decoded.getChannelData(0);let mono=src;
+  if(decoded.numberOfChannels>1){mono=new Float32Array(decoded.length);for(let ch=0;ch<decoded.numberOfChannels;ch++){const d=decoded.getChannelData(ch);for(let i=0;i<mono.length;i++)mono[i]+=d[i]/decoded.numberOfChannels}}
+  status.textContent="Estimando BPM e tonalidade...";bar.style.width="55%";
+  const bpm=estimateBpm(mono,decoded.sampleRate);const key=estimateKey(mono,decoded.sampleRate);bar.style.width="78%";
+  const chords=estimateChords(mono,decoded.sampleRate,key.key);bar.style.width="100%";
+  $("key").textContent=key.key;$("keyConf").textContent=key.confidence+"% confiança";$("bpm").textContent=bpm.bpm||"—";$("bpmConf").textContent=(bpm.confidence||0)+"% confiança";
+  $("duration").textContent=Math.floor(decoded.duration/60)+":"+String(Math.floor(decoded.duration%60)).padStart(2,"0");
+  $("chords").innerHTML=chords.length?chords.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>';
+  result.style.display="block";status.textContent="Análise concluída. Revise os resultados antes de usar a cifra.";result.scrollIntoView({behavior:"smooth",block:"nearest"});await ctx.close();
+ }catch(e){console.error(e);bar.style.width="0%";status.textContent="Não foi possível analisar este arquivo neste navegador. Tente MP3 ou WAV.";result.style.display="none"}
+ finally{btn.disabled=false}
+});
+</script></body></html>
