@@ -95,6 +95,14 @@ main>h1,main>header+h1,main>header+h1+p{display:none}
 </section>
 <div class="footer">Cifraê V5 Real · processamento local · nenhum áudio é enviado por este protótipo.</div>
 
+<section id="realAudioPanel" class="panel" style="display:none">
+<h2>🎙️ Áudios reais dos instrumentos</h2>
+<p>Carregue os WAV/MP3 exportados do seu estúdio. O Cifraê usa o áudio real no lugar do instrumento sintético quando houver um arquivo correspondente.</p>
+<label class="upload" for="realAudioFiles"><strong>Adicionar faixas reais</strong><small>Selecione uma ou várias faixas · nomes reconhecidos: Violão, Guitarra, Contrabaixo, Cavaquinho, Banjo, Bateria, Percussão e Sopro</small></label>
+<input id="realAudioFiles" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.aac,.flac" multiple>
+<div id="realAudioList" style="display:grid;gap:8px;margin-top:12px"></div>
+<p id="realAudioStatus" class="notice">Nenhuma faixa real carregada.</p>
+</section>
 <section id="acompanhamento" class="panel" style="display:none"><h2>🎚️ Acompanhamento</h2><p>Escolha os instrumentos que acompanharão a harmonia detectada.</p><div id="instrumentList" style="display:grid;gap:10px"></div><div class="actions"><button id="generateBand">✨ Gerar acompanhamento</button><button class="secondary" id="stopBand">■ Parar</button></div><p id="bandStatus" class="notice">Aguardando instrumentos.</p></section>
 <script>(()=>{const I=[['🎸','Violão'],['🎸','Guitarra'],['🎸','Contrabaixo'],['🪕','Cavaquinho'],['🪕','Banjo'],['🥁','Bateria'],['🪘','Percussão'],['🎷','Sopro']],p=document.getElementById('acompanhamento'),l=document.getElementById('instrumentList'),s=document.getElementById('bandStatus');
 I.forEach(x=>{const r=document.createElement('div');r.style='display:grid;grid-template-columns:28px 1fr 90px 88px;align-items:center;gap:9px;background:#26382b;border-radius:14px;padding:11px';r.innerHTML='<span>'+x[0]+'</span><b>'+x[1]+'</b><input type="range" min="0" max="100" value="75" aria-label="Volume '+x[1]+'"><div class="mixerBtns"><button class="secondary" data-mute>M</button><button class="secondary" data-solo>S</button><button class="secondary" data-on>ON</button></div>';l.appendChild(r)});
@@ -102,11 +110,14 @@ l.onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.on!==
 
 let bandCtx=null,bandMaster=null,bandCompressor=null,bandTimer=null,bandMediaGain=null,bandSource=null;
 const instrumentBuses=new Map();
+const realInstrumentBuffers=new Map();
+let realSources=[];
 
 function midiHz(m){return 440*Math.pow(2,(m-69)/12)}
 function bandNotes(name){const m=/^([A-G]#?)(m?)$/.exec(name);if(!m)return [60,64,67,72];const p=NOTE_NAMES.indexOf(m[1]),r=60+p,minor=!!m[2];return [r,r+(minor?3:4),r+7,r+12]}
 function selectedInstrument(name){const card=[...l.children].find(x=>x.querySelector('b')?.textContent===name);if(!card)return {level:.75,active:false};const controls=card.querySelector('.mixerBtns');const muted=controls.querySelector('[data-mute]')?.classList.contains('active');const on=controls.querySelector('[data-on]')?.textContent==='ON';const solos=[...l.querySelectorAll('[data-solo].active')];const soloed=controls.querySelector('[data-solo]')?.classList.contains('active');const allowed=on&&!muted&&(solos.length===0||soloed);return {level:Number(card.querySelector('input')?.value||75)/100,active:allowed}}
-function stopBandInternal(message='Acompanhamento parado.'){if(bandTimer){clearTimeout(bandTimer);bandTimer=null}if(bandMaster&&bandCtx){try{bandMaster.gain.cancelScheduledValues(bandCtx.currentTime);bandMaster.gain.setTargetAtTime(.0001,bandCtx.currentTime,.025)}catch(e){bandMaster.gain.value=.0001}}if(message)s.textContent=message}
+function stopRealSources(){for(const src of realSources){try{src.stop()}catch(e){}try{src.disconnect()}catch(e){}}realSources=[]}
+function stopBandInternal(message='Acompanhamento parado.'){stopRealSources();if(bandTimer){clearTimeout(bandTimer);bandTimer=null}if(bandMaster&&bandCtx){try{bandMaster.gain.cancelScheduledValues(bandCtx.currentTime);bandMaster.gain.setTargetAtTime(.0001,bandCtx.currentTime,.025)}catch(e){bandMaster.gain.value=.0001}}if(message)s.textContent=message}
 function ensureBus(name){if(!bandCtx)return null;let bus=instrumentBuses.get(name);if(!bus){bus=bandCtx.createGain();bus.gain.value=1;bus.connect(bandMaster);instrumentBuses.set(name,bus)}return bus}
 function playBandNote(m,t,d,type,gain,channel,name){if(!bandCtx||bandCtx.state==='closed')return;const bus=ensureBus(name);if(!bus)return;const o=bandCtx.createOscillator(),g=bandCtx.createGain(),f=bandCtx.createBiquadFilter();o.type=type;o.frequency.value=midiHz(m);if(channel==='strings'){f.type='lowpass';f.frequency.value=3600;f.Q.value=.7}else if(channel==='brass'){f.type='lowpass';f.frequency.value=2400;f.Q.value=.9}else if(channel==='bass'){f.type='lowpass';f.frequency.value=850;f.Q.value=.8}else f.type='lowpass',f.frequency.value=6500;const peak=Math.max(.004,gain);const end=Math.max(t+.06,t+d);g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(peak,t+.012);g.gain.exponentialRampToValueAtTime(Math.max(.0001,peak*.55),Math.min(end-.02,t+Math.max(.08,d*.45)));g.gain.exponentialRampToValueAtTime(.0001,end);o.connect(f);f.connect(g);g.connect(bus);o.start(t);o.stop(end+.04)}
 function bandKick(t,gain,name){if(!bandCtx)return;const bus=ensureBus(name);const o=bandCtx.createOscillator(),g=bandCtx.createGain();o.type='sine';o.frequency.setValueAtTime(120,t);o.frequency.exponentialRampToValueAtTime(48,t+.13);g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(Math.max(.006,gain),t+.006);g.gain.exponentialRampToValueAtTime(.0001,t+.2);o.connect(g);g.connect(bus);o.start(t);o.stop(t+.22)}
@@ -125,12 +136,40 @@ async function prepareBandAudio(){
  try{bandMaster.gain.cancelScheduledValues(bandCtx.currentTime);bandMaster.gain.setTargetAtTime(1.05,bandCtx.currentTime,.015)}catch(e){bandMaster.gain.value=1.05}
  return media;
 }
+const realFiles=document.getElementById('realAudioFiles'),realList=document.getElementById('realAudioList'),realStatus=document.getElementById('realAudioStatus');
+const realNames=['Violão','Guitarra','Contrabaixo','Cavaquinho','Banjo','Bateria','Percussão','Sopro'];
+function normalizeInstrumentFile(name){const n=name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');return realNames.find(x=>n.includes(x.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')))||null}
+async function loadRealInstrumentFiles(files){
+ if(!bandCtx||bandCtx.state==='closed')bandCtx=new(window.AudioContext||window.webkitAudioContext)();
+ await bandCtx.resume();
+ let loaded=0;
+ for(const file of [...files]){
+  const name=normalizeInstrumentFile(file.name); if(!name)continue;
+  try{const buf=await bandCtx.decodeAudioData(await file.arrayBuffer());realInstrumentBuffers.set(name,buf);loaded++;}catch(e){console.warn('Falha ao decodificar',file.name,e)}
+ }
+ realList.innerHTML='';
+ for(const name of realNames){const b=realInstrumentBuffers.get(name);if(b){const row=document.createElement('div');row.className='studioBadge';row.textContent='✓ '+name+' · '+fmtTime(b.duration);realList.appendChild(row)}}
+ realStatus.textContent=loaded?'✓ '+realInstrumentBuffers.size+' faixa(s) real(is) pronta(s).':'Nenhuma faixa reconhecida foi carregada.';
+}
+realFiles?.addEventListener('change',e=>loadRealInstrumentFiles(e.target.files));
 document.getElementById('generateBand').onclick=async()=>{
  const prog=window.cifraeProgression||[];if(!prog.length){s.textContent='Faça primeiro uma análise para gerar a banda.';return}
  try{
   const media=await prepareBandAudio();if(bandTimer){clearTimeout(bandTimer);bandTimer=null}
   if(media.paused)await media.play();
-  const startMediaTime=Math.max(0,Number(media.currentTime)||0),bpm=Math.max(60,Math.min(180,Number(document.getElementById('bpm').textContent)||100)),beat=60/bpm,base=bandCtx.currentTime+.08;
+  stopRealSources();
+  const startMediaTime=Math.max(0,Number(media.currentTime)||0);
+  for(const [name,buffer] of realInstrumentBuffers){
+   const card=[...l.children].find(x=>x.querySelector('b')?.textContent===name);
+   const controls=card?.querySelector('.mixerBtns'); if(!controls)continue;
+   const on=controls.querySelector('[data-on]')?.textContent==='ON',muted=controls.querySelector('[data-mute]')?.classList.contains('active'),solos=[...l.querySelectorAll('[data-solo].active')],solo=controls.querySelector('[data-solo]')?.classList.contains('active');
+   if(!on||muted||(solos.length&&!solo))continue;
+   const level=Number(card.querySelector('input')?.value||75)/100;
+   const src=bandCtx.createBufferSource(),gain=bandCtx.createGain(),bus=ensureBus(name);src.buffer=buffer;gain.gain.value=level;src.connect(gain);gain.connect(bus);
+   const offset=Math.min(startMediaTime,Math.max(0,buffer.duration-.01)),available=Math.max(.01,buffer.duration-offset);
+   src.start(bandCtx.currentTime+.08,offset,available);realSources.push(src);
+  }
+  const beat=Math.max(0,Number(media.currentTime)||0),bpm=Math.max(60,Math.min(180,Number(document.getElementById('bpm').textContent)||100)),beat=60/bpm,base=bandCtx.currentTime+.08;
   const endMedia=Number.isFinite(media.duration)?media.duration:Math.max(...prog.map(x=>x.end),startMediaTime+30);let scheduled=0;
   for(const seg of prog){if(seg.end<=startMediaTime)continue;const from=Math.max(seg.start,startMediaTime),firstBeat=seg.start+Math.ceil(Math.max(0,from-seg.start)/beat-1e-7)*beat,ns=bandNotes(seg.chord);
    for(let mediaT=firstBeat;mediaT<seg.end&&mediaT<endMedia;mediaT+=beat){
@@ -152,7 +191,7 @@ document.getElementById('generateBand').onclick=async()=>{
 document.getElementById('stopBand').onclick=()=>stopBandInternal();
 l.addEventListener('input',e=>{const range=e.target.closest('input[type=range]');if(!range)return;const card=range.closest('div');const name=card?.querySelector('b')?.textContent,bus=instrumentBuses.get(name);if(bus&&bandCtx){bus.gain.setTargetAtTime(Number(range.value)/100,bandCtx.currentTime,.02)}});
 window.addEventListener('beforeunload',()=>stopBandInternal(null));
-window.showAccompaniment=()=>{p.style.display='block';p.scrollIntoView({behavior:'smooth',block:'center'});document.getElementById('openBand').disabled=false}
+window.showAccompaniment=()=>{p.style.display='block';document.getElementById('realAudioPanel').style.display='block';p.scrollIntoView({behavior:'smooth',block:'center'});document.getElementById('openBand').disabled=false}
 })();</script>
 </main>
 <script>
