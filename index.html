@@ -96,141 +96,64 @@ main>h1,main>header+h1,main>header+h1+p{display:none}
 <div class="footer">Cifraê V5 Real · processamento local · nenhum áudio é enviado por este protótipo.</div>
 
 <section id="acompanhamento" class="panel" style="display:none"><h2>🎚️ Acompanhamento</h2><p>Escolha os instrumentos que acompanharão a harmonia detectada.</p><div id="instrumentList" style="display:grid;gap:10px"></div><div class="actions"><button id="generateBand">✨ Gerar acompanhamento</button><button class="secondary" id="stopBand">■ Parar</button></div><p id="bandStatus" class="notice">Aguardando instrumentos.</p></section>
-<script>(()=>{const I=[['🎸','Violão'],['🎸','Guitarra'],['🎸','Contrabaixo'],['🪕','Cavaquinho'],['🪕','Banjo'],['🥁','Bateria'],['🪘','Percussão'],['🎷','Sopro']],p=document.getElementById('acompanhamento'),l=document.getElementById('instrumentList'),s=document.getElementById('bandStatus');I.forEach((x,i)=>{let r=document.createElement('div');r.style='display:grid;grid-template-columns:28px 1fr 90px 88px;align-items:center;gap:9px;background:#26382b;border-radius:14px;padding:11px';r.innerHTML='<span>'+x[0]+'</span><b>'+x[1]+'</b><input type="range" min="0" max="100" value="75" aria-label="Volume '+x[1]+'"><div class="mixerBtns"><button class="secondary" data-mute>M</button><button class="secondary" data-solo>S</button><button class="secondary" data-on>ON</button></div>';l.appendChild(r)});l.onclick=e=>{let b=e.target.closest('button');if(!b)return;if(b.dataset.on!==undefined){let on=b.textContent==='ON';b.textContent=on?'OFF':'ON';b.style.opacity=on?.55:1}if(b.dataset.mute!==undefined)b.classList.toggle('active');if(b.dataset.solo!==undefined)b.classList.toggle('active')};let bandCtx=null,bandMaster=null,bandCompressor=null,bandTimer=null,bandMediaGain=null; const bandMediaSources=new WeakMap();
+<script>(()=>{const I=[['🎸','Violão'],['🎸','Guitarra'],['🎸','Contrabaixo'],['🪕','Cavaquinho'],['🪕','Banjo'],['🥁','Bateria'],['🪘','Percussão'],['🎷','Sopro']],p=document.getElementById('acompanhamento'),l=document.getElementById('instrumentList'),s=document.getElementById('bandStatus');
+I.forEach(x=>{const r=document.createElement('div');r.style='display:grid;grid-template-columns:28px 1fr 90px 88px;align-items:center;gap:9px;background:#26382b;border-radius:14px;padding:11px';r.innerHTML='<span>'+x[0]+'</span><b>'+x[1]+'</b><input type="range" min="0" max="100" value="75" aria-label="Volume '+x[1]+'"><div class="mixerBtns"><button class="secondary" data-mute>M</button><button class="secondary" data-solo>S</button><button class="secondary" data-on>ON</button></div>';l.appendChild(r)});
+l.onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.on!==undefined){const on=b.textContent==='ON';b.textContent=on?'OFF':'ON';b.style.opacity=on?.55:1}if(b.dataset.mute!==undefined)b.classList.toggle('active');if(b.dataset.solo!==undefined)b.classList.toggle('active')};
+
+let bandCtx=null,bandMaster=null,bandCompressor=null,bandTimer=null,bandMediaGain=null,bandSource=null;
+const instrumentBuses=new Map();
+
 function midiHz(m){return 440*Math.pow(2,(m-69)/12)}
-function bandNotes(name){
- const m=/^([A-G]#?)(m?)$/.exec(name);
- if(!m)return [60,64,67,72];
- const p=NOTE_NAMES.indexOf(m[1]),r=60+p,minor=!!m[2];
- return [r,r+(minor?3:4),r+7,r+12];
-}
-function stopBandInternal(message='Acompanhamento parado.'){
- if(bandTimer){clearTimeout(bandTimer);bandTimer=null}
- if(bandCtx&&bandMaster){try{bandMaster.gain.setTargetAtTime(.0001,bandCtx.currentTime,.025)}catch(e){bandMaster.gain.value=.0001}}
- if(message)s.textContent=message;
-}
-function playBandNote(m,t,d,type,gain,channel){
- if(!bandCtx||bandCtx.state==='closed')return;
- const o=bandCtx.createOscillator(),g=bandCtx.createGain(),f=bandCtx.createBiquadFilter();
- o.type=type;o.frequency.value=midiHz(m);
- if(channel==='strings'){f.type='lowpass';f.frequency.value=4200;f.Q.value=.7}
- else if(channel==='brass'){f.type='lowpass';f.frequency.value=2600;f.Q.value=.9}
- else if(channel==='bass'){f.type='lowpass';f.frequency.value=900;f.Q.value=.8}
- else {f.type='lowpass';f.frequency.value=7000}
- const peak=Math.max(.002,gain);
- g.gain.setValueAtTime(.0001,t);
- g.gain.exponentialRampToValueAtTime(peak,t+.018);
- g.gain.exponentialRampToValueAtTime(Math.max(.0001,peak*.58),t+Math.min(.11,d*.45));
- g.gain.exponentialRampToValueAtTime(.0001,t+d);
- o.connect(f);f.connect(g);g.connect(bandMaster);
- o.start(t);o.stop(t+d+.04);
-}
-function bandKick(t,gain){
- if(!bandCtx)return;
- const o=bandCtx.createOscillator(),g=bandCtx.createGain();
- o.type='sine';o.frequency.setValueAtTime(110,t);o.frequency.exponentialRampToValueAtTime(48,t+.12);
- g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(Math.max(.004,gain),t+.006);g.gain.exponentialRampToValueAtTime(.0001,t+.16);
- o.connect(g);g.connect(bandMaster);o.start(t);o.stop(t+.18);
-}
-function bandHat(t,gain){
- if(!bandCtx)return;
- const n=bandCtx.createBufferSource(),g=bandCtx.createGain(),buf=bandCtx.createBuffer(1,Math.floor(bandCtx.sampleRate*.045),bandCtx.sampleRate),d=buf.getChannelData(0);
- for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
- n.buffer=buf;g.gain.setValueAtTime(Math.max(.001,gain),t);g.gain.exponentialRampToValueAtTime(.0001,t+.045);
- n.connect(g);g.connect(bandMaster);n.start(t);
-}
+function bandNotes(name){const m=/^([A-G]#?)(m?)$/.exec(name);if(!m)return [60,64,67,72];const p=NOTE_NAMES.indexOf(m[1]),r=60+p,minor=!!m[2];return [r,r+(minor?3:4),r+7,r+12]}
+function selectedInstrument(name){const card=[...l.children].find(x=>x.querySelector('b')?.textContent===name);if(!card)return {level:.75,active:false};const controls=card.querySelector('.mixerBtns');const muted=controls.querySelector('[data-mute]')?.classList.contains('active');const on=controls.querySelector('[data-on]')?.textContent==='ON';const solos=[...l.querySelectorAll('[data-solo].active')];const soloed=controls.querySelector('[data-solo]')?.classList.contains('active');const allowed=on&&!muted&&(solos.length===0||soloed);return {level:Number(card.querySelector('input')?.value||75)/100,active:allowed}}
+function stopBandInternal(message='Acompanhamento parado.'){if(bandTimer){clearTimeout(bandTimer);bandTimer=null}if(bandMaster&&bandCtx){try{bandMaster.gain.cancelScheduledValues(bandCtx.currentTime);bandMaster.gain.setTargetAtTime(.0001,bandCtx.currentTime,.025)}catch(e){bandMaster.gain.value=.0001}}if(message)s.textContent=message}
+function ensureBus(name){if(!bandCtx)return null;let bus=instrumentBuses.get(name);if(!bus){bus=bandCtx.createGain();bus.gain.value=1;bus.connect(bandMaster);instrumentBuses.set(name,bus)}return bus}
+function playBandNote(m,t,d,type,gain,channel,name){if(!bandCtx||bandCtx.state==='closed')return;const bus=ensureBus(name);if(!bus)return;const o=bandCtx.createOscillator(),g=bandCtx.createGain(),f=bandCtx.createBiquadFilter();o.type=type;o.frequency.value=midiHz(m);if(channel==='strings'){f.type='lowpass';f.frequency.value=3600;f.Q.value=.7}else if(channel==='brass'){f.type='lowpass';f.frequency.value=2400;f.Q.value=.9}else if(channel==='bass'){f.type='lowpass';f.frequency.value=850;f.Q.value=.8}else f.type='lowpass',f.frequency.value=6500;const peak=Math.max(.004,gain);const end=Math.max(t+.06,t+d);g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(peak,t+.012);g.gain.exponentialRampToValueAtTime(Math.max(.0001,peak*.55),Math.min(end-.02,t+Math.max(.08,d*.45)));g.gain.exponentialRampToValueAtTime(.0001,end);o.connect(f);f.connect(g);g.connect(bus);o.start(t);o.stop(end+.04)}
+function bandKick(t,gain,name){if(!bandCtx)return;const bus=ensureBus(name);const o=bandCtx.createOscillator(),g=bandCtx.createGain();o.type='sine';o.frequency.setValueAtTime(120,t);o.frequency.exponentialRampToValueAtTime(48,t+.13);g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(Math.max(.006,gain),t+.006);g.gain.exponentialRampToValueAtTime(.0001,t+.2);o.connect(g);g.connect(bus);o.start(t);o.stop(t+.22)}
+function bandHat(t,gain,name){if(!bandCtx)return;const bus=ensureBus(name),n=bandCtx.createBufferSource(),g=bandCtx.createGain(),buf=bandCtx.createBuffer(1,Math.floor(bandCtx.sampleRate*.055),bandCtx.sampleRate),d=buf.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;n.buffer=buf;g.gain.setValueAtTime(Math.max(.002,gain),t);g.gain.exponentialRampToValueAtTime(.0001,t+.055);n.connect(g);g.connect(bus);n.start(t)}
 async function prepareBandAudio(){
- const media=currentMedia();
- if(!media?.src)throw new Error('Nenhum áudio carregado.');
- if(!bandCtx||bandCtx.state==='closed'){
-  bandCtx=window.cifraeBandCtx&&window.cifraeBandCtx.state!=='closed'?window.cifraeBandCtx:new(window.AudioContext||window.webkitAudioContext)();
-  bandMaster=bandCtx.createGain();bandMaster.gain.value=.95;
-  bandCompressor=bandCtx.createDynamicsCompressor();
-  bandCompressor.threshold.value=-18;bandCompressor.knee.value=16;bandCompressor.ratio.value=5;bandCompressor.attack.value=.004;bandCompressor.release.value=.18;
-  bandMaster.connect(bandCompressor);bandCompressor.connect(bandCtx.destination);
-  if(window.cifraeBandMediaSource){
-   try{window.cifraeBandMediaSource.disconnect()}catch(e){}
-   window.cifraeBandMediaSource.connect(bandCompressor);
-   bandMediaSources.set(media,window.cifraeBandMediaSource);
-  }
+ const media=currentMedia();if(!media?.src)throw new Error('Nenhum áudio carregado.');
+ if(!bandCtx||bandCtx.state==='closed'){bandCtx=window.cifraeBandCtx&&window.cifraeBandCtx.state!=='closed'?window.cifraeBandCtx:new(window.AudioContext||window.webkitAudioContext)()}
+ if(!bandMaster){bandMaster=bandCtx.createGain();bandMaster.gain.value=1.05;bandCompressor=bandCtx.createDynamicsCompressor();bandCompressor.threshold.value=-14;bandCompressor.knee.value=18;bandCompressor.ratio.value=4;bandCompressor.attack.value=.003;bandCompressor.release.value=.16;bandMaster.connect(bandCompressor);bandCompressor.connect(bandCtx.destination)}
+ if(!bandSource){
+  bandSource=window.cifraeBandMediaSource||null;
+  if(!bandSource)bandSource=bandCtx.createMediaElementSource(media);
+  bandMediaGain=bandCtx.createGain();bandMediaGain.gain.value=.78;bandSource.connect(bandMediaGain);bandMediaGain.connect(bandMaster);
  }
- if(!bandMediaSources.has(media)){
-  const mediaSource=bandCtx.createMediaElementSource(media);
-  const mediaGain=bandCtx.createGain();
-  mediaGain.gain.value=.92;
-  mediaSource.connect(mediaGain);mediaGain.connect(bandCompressor);
-  bandMediaSources.set(media,mediaSource);
- }
- if(!bandMediaGain){bandMediaGain=bandCtx.createGain();bandMediaGain.gain.value=1;bandMediaGain.connect(bandCompressor)}
+ if(window.cifraeBandMediaSource)window.cifraeBandMediaSource=bandSource;
  await bandCtx.resume();
- try{bandMaster.gain.setTargetAtTime(.95,bandCtx.currentTime,.02)}catch(e){bandMaster.gain.value=.95}
+ try{bandMaster.gain.cancelScheduledValues(bandCtx.currentTime);bandMaster.gain.setTargetAtTime(1.05,bandCtx.currentTime,.015)}catch(e){bandMaster.gain.value=1.05}
  return media;
 }
 document.getElementById('generateBand').onclick=async()=>{
- const prog=window.cifraeProgression||[];
- if(!prog.length){s.textContent='Faça primeiro uma análise para gerar a banda.';return}
+ const prog=window.cifraeProgression||[];if(!prog.length){s.textContent='Faça primeiro uma análise para gerar a banda.';return}
  try{
-  const media=await prepareBandAudio();
-  if(bandTimer){clearTimeout(bandTimer);bandTimer=null}
+  const media=await prepareBandAudio();if(bandTimer){clearTimeout(bandTimer);bandTimer=null}
   if(media.paused)await media.play();
-  const startMediaTime=Math.max(0,Number(media.currentTime)||0);
-  const bpm=Math.max(60,Math.min(180,Number(document.getElementById('bpm').textContent)||100));
-  const beat=60/bpm,base=bandCtx.currentTime+.12;
-  const buttons=[...l.querySelectorAll('[data-on]')];
-  const solos=buttons.filter(x=>x.parentElement.querySelector('[data-solo]')?.classList.contains('active'));
-  const endMedia=Number.isFinite(media.duration)?media.duration:Math.max(...prog.map(x=>x.end),startMediaTime+30);
-  let scheduled=0;
-  for(const seg of prog){
-   if(seg.end<=startMediaTime)continue;
-   const from=Math.max(seg.start,startMediaTime);
-   const firstBeat=seg.start+Math.ceil(Math.max(0,from-seg.start)/beat-1e-7)*beat;
-   const ns=bandNotes(seg.chord);
-   for(let mediaT=firstBeat;mediaT<seg.end && mediaT<endMedia;mediaT+=beat){
+  const startMediaTime=Math.max(0,Number(media.currentTime)||0),bpm=Math.max(60,Math.min(180,Number(document.getElementById('bpm').textContent)||100)),beat=60/bpm,base=bandCtx.currentTime+.08;
+  const endMedia=Number.isFinite(media.duration)?media.duration:Math.max(...prog.map(x=>x.end),startMediaTime+30);let scheduled=0;
+  for(const seg of prog){if(seg.end<=startMediaTime)continue;const from=Math.max(seg.start,startMediaTime),firstBeat=seg.start+Math.ceil(Math.max(0,from-seg.start)/beat-1e-7)*beat,ns=bandNotes(seg.chord);
+   for(let mediaT=firstBeat;mediaT<seg.end&&mediaT<endMedia;mediaT+=beat){
     const t=base+(mediaT-startMediaTime);
-    if(t<base)continue;
-    buttons.forEach(btn=>{
-     const controls=btn.parentElement,card=controls.parentElement;
-     const muted=controls.querySelector('[data-mute]')?.classList.contains('active');
-     const soloed=solos.length>0&&!controls.querySelector('[data-solo]')?.classList.contains('active');
-     if(btn.textContent!=='ON'||muted||soloed)return;
-     const name=card.querySelector('b')?.textContent||'';
-     const level=Number(card.querySelector('input')?.value||75)/100;
-     const end=Math.min(seg.end,mediaT+beat*.9);
-     const dur=Math.max(.06,end-mediaT);
-     if(name==='Contrabaixo'){
-      playBandNote(ns[0]-12,t,Math.min(.62,dur),'sine',.17*level,'bass');
-      if(mediaT+beat<seg.end)playBandNote(ns[0],t+beat*.5,.16,'triangle',.06*level,'bass');
-     }else if(name==='Bateria'){
-      bandKick(t,.17*level);
-      bandHat(t+beat*.5,.05*level);bandHat(t+beat*.75,.04*level);
-     }else if(name==='Percussão'){
-      bandHat(t+beat*.25,.06*level);bandHat(t+beat*.75,.05*level);
-     }else if(name==='Sopro'){
-      playBandNote(ns[1],t,Math.min(.48,dur),'sawtooth',.09*level,'brass');
-     }else{
-      const pat=[0,1,2,1];
-      pat.forEach((n,j)=>{
-       const tt=t+j*beat/4;
-       if(tt<base+(seg.end-startMediaTime))playBandNote(ns[n],tt,Math.min(.28,beat*.24),'triangle',.075*level,'strings');
-      });
-     }
+    for(const card of [...l.children]){
+     const controls=card.querySelector('.mixerBtns'),name=card.querySelector('b')?.textContent||'',on=controls.querySelector('[data-on]')?.textContent==='ON',muted=controls.querySelector('[data-mute]')?.classList.contains('active');const solos=[...l.querySelectorAll('[data-solo].active')],solo=controls.querySelector('[data-solo]')?.classList.contains('active');if(!on||muted||(solos.length&&!solo))continue;const level=Number(card.querySelector('input')?.value||75)/100,end=Math.min(seg.end,mediaT+beat*.92),dur=Math.max(.08,end-mediaT);
+     if(name==='Contrabaixo'){playBandNote(ns[0]-12,t,Math.min(.7,dur),'sine',.28*level,'bass',name);if(mediaT+beat<seg.end)playBandNote(ns[0],t+beat*.5,.18,'triangle',.09*level,'bass',name)}
+     else if(name==='Bateria'){bandKick(t,.28*level,name);bandHat(t+beat*.5,.075*level,name);bandHat(t+beat*.75,.055*level,name)}
+     else if(name==='Percussão'){bandHat(t+beat*.25,.09*level,name);bandHat(t+beat*.75,.075*level,name)}
+     else if(name==='Sopro'){playBandNote(ns[1],t,Math.min(.55,dur),'sawtooth',.14*level,'brass',name);playBandNote(ns[2],t+.04,Math.min(.42,dur),'sawtooth',.08*level,'brass',name)}
+     else{const pat=[0,1,2,1];pat.forEach((n,j)=>{const tt=t+j*beat/4;if(tt<base+(seg.end-startMediaTime))playBandNote(ns[n],tt,Math.min(.3,beat*.25),'triangle',.11*level,'strings',name)})}
      scheduled++;
-    });
+    }
    }
   }
-  s.textContent=scheduled?'▶ Acompanhamento tocando junto com o áudio · '+scheduled+' eventos':'Não encontrei eventos para o ponto atual da música.';
-  $("studioPlay").textContent=media.paused?'▶':'❚❚';
- }catch(e){
-  console.error(e);s.textContent='Não foi possível iniciar o acompanhamento neste dispositivo. Toque novamente em “Gerar acompanhamento”.';
- }
+  s.textContent=scheduled?'▶ Acompanhamento ativo · '+scheduled+' eventos · áudio original + instrumentos':'Não encontrei eventos no ponto atual da música.';document.getElementById('studioPlay').textContent=media.paused?'▶':'❚❚';
+ }catch(e){console.error(e);s.textContent='Falha no áudio: '+(e?.message||'verifique a reprodução e toque novamente em “Gerar acompanhamento”.')}
 };
 document.getElementById('stopBand').onclick=()=>stopBandInternal();
-l.addEventListener('input',e=>{
- const range=e.target.closest('input[type=range]');
- if(!range)return;
-});
+l.addEventListener('input',e=>{const range=e.target.closest('input[type=range]');if(!range)return;const card=range.closest('div');const name=card?.querySelector('b')?.textContent,bus=instrumentBuses.get(name);if(bus&&bandCtx){bus.gain.setTargetAtTime(Number(range.value)/100,bandCtx.currentTime,.02)}});
 window.addEventListener('beforeunload',()=>stopBandInternal(null));
-window.showAccompaniment=()=>{p.style.display="block";p.scrollIntoView({behavior:"smooth",block:"center"});document.getElementById("openBand").disabled=false}})();</script>
+window.showAccompaniment=()=>{p.style.display='block';p.scrollIntoView({behavior:'smooth',block:'center'});document.getElementById('openBand').disabled=false}
+})();</script>
 </main>
 <script>
 const $=id=>document.getElementById(id),file=$("file"),player=$("player"),btn=$("analyze"),clear=$("clear"),status=$("status"),bar=$("bar"),result=$("result");
