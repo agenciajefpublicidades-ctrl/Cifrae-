@@ -340,51 +340,99 @@ function chromaFromFrame(frame,sr){
  const n=frame.length,win=new Float64Array(n);
  for(let i=0;i<n;i++)win[i]=frame[i]*(0.5-0.5*Math.cos(2*Math.PI*i/(n-1)));
  const {re,im}=fftReal(win),ch=new Float64Array(12);
- // Soma fundamental + harmônicos: isso evita que um único parcial domine o acorde.
- for(let midi=36;midi<=84;midi++){
-  const hz=440*Math.pow(2,(midi-69)/12); if(hz<70||hz>1200)continue;
-  let energy=0;
-  for(let h=1;h<=5;h++){
-   const fhz=hz*h;if(fhz>Math.min(1800,sr/2-20))break;
-   const k=Math.max(1,Math.min((n>>1)-1,Math.round(fhz*n/sr)));
-   const mag=Math.hypot(re[k],im[k])/n;
-   energy+=mag/(h===1?1:h===2?1.7:h===3?2.5:h===4?3.2:4);
-  }
-  ch[midi%12]+=energy;
+ // Chroma espectral: cada parcial é atribuído à sua classe de altura.
+ // O objetivo aqui é medir a distribuição de notas do áudio, não montar acordes.
+ for(let k=2;k<(n>>1);k++){
+  const hz=k*sr/n;
+  if(hz<55||hz>2200)continue;
+  const mag=Math.hypot(re[k],im[k])/n;
+  if(mag<0.00015)continue;
+  const midi=69+12*Math.log2(hz/440);
+  const pc=((Math.round(midi)%12)+12)%12;
+  const freqWeight=1/Math.sqrt(Math.max(1,hz/110));
+  ch[pc]+=mag*freqWeight;
  }
  const total=ch.reduce((a,b)=>a+b,0)||1;
  for(let i=0;i<12;i++)ch[i]/=total;
  return ch;
 }
+
 const KEY_PROFILES={
  major:[6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88],
- minor:[6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17]
+ minor:[6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17],
+ // Segundo perfil independente para reduzir dependência de um único modelo.
+ major2:[0.748,0.060,0.488,0.082,0.670,0.460,0.096,0.715,0.104,0.130,0.094,0.081],
+ minor2:[0.712,0.084,0.474,0.618,0.049,0.460,0.105,0.747,0.176,0.062,0.052,0.192]
 };
 function profileCorrelation(a,b){
  let ma=0,mb=0;for(let i=0;i<12;i++){ma+=a[i];mb+=b[i]}ma/=12;mb/=12;
  let num=0,da=0,db=0;for(let i=0;i<12;i++){const x=a[i]-ma,y=b[i]-mb;num+=x*y;da+=x*x;db+=y*y}
  return num/Math.sqrt((da||1)*(db||1));
 }
+function rotateProfile(profile,root){
+ return Array.from({length:12},(_,i)=>profile[(i-root+12)%12]);
+}
+function keyScore(chroma,root,mode){
+ const p1=KEY_PROFILES[mode==="m"?"minor":"major"];
+ const p2=KEY_PROFILES[mode==="m"?"minor2":"major2"];
+ return .62*profileCorrelation(chroma,rotateProfile(p1,root))+
+        .38*profileCorrelation(chroma,rotateProfile(p2,root));
+}
 function estimateKey(samples,sr){
  const size=4096,step=2048,maxSec=Math.min(90,samples.length/sr),total=Math.floor(maxSec*sr);
- const frames=[],hann=i=>0.5*(1-Math.cos(2*Math.PI*i/(size-1)));
- for(let start=0;start+size<total;start+=step){
-  const frame=samples.subarray(start,start+size);let rms=0,zc=0,prev=frame[0]||0;
-  for(let i=0;i<size;i++){const v=frame[i]*hann(i);rms+=v*v;if(i&&((v>=0)!==(prev>=0)))zc++;prev=v}
-  rms=Math.sqrt(rms/size);if(rms<0.008||zc/size>0.28)continue;
-  const ch=chromaFromFrame(frame,sr),energy=ch.reduce((a,b)=>a+b,0);if(energy)frames.push({ch,energy:rms});
+ const windows=[];
+ for(let start=0;start+size<=total;start+=step){
+  const frame=samples.subarray(start,start+size);
+  let rms=0,peak=0;for(let i=0;i<size;i++){const v=frame[i];rms+=v*v;peak=Math.max(peak,Math.abs(v))}
+  rms=Math.sqrt(rms/size);
+  if(rms<0.008||peak<0.035)continue;
+  const ch=chromaFromFrame(frame,sr);
+  let best=null,second=null;
+  for(let root=0;root<12;root++)for(const mode of ["","m"]){
+   const score=keyScore(ch,root,mode);
+   const item={root,mode,score};
+   if(!best||score>best.score){second=best;best=item}
+   else if(!second||score>second.score)second=item;
+  }
+  const gap=Math.max(0,best.score-(second?.score||0));
+  windows.push({ch,rms,best,gap});
  }
- if(!frames.length)return {key:"—",confidence:0};
- const sum=new Float64Array(12),weights=frames.map(x=>x.energy).sort((a,b)=>b-a),cut=weights[Math.max(0,Math.floor(weights.length*.55))];
- let used=0;for(const f of frames){if(f.energy<cut)continue;used++;for(let i=0;i<12;i++)sum[i]+=f.ch[i]*f.energy}
- const avg=Array.from(sum);let best=null,second=null;
- for(let root=0;root<12;root++)for(const [mode,profile] of [["",KEY_PROFILES.major],["m",KEY_PROFILES.minor]]){
-  const score=profileCorrelation(avg,Array.from({length:12},(_,i)=>profile[(i-root+12)%12]));
-  const item={key:NOTE_NAMES[root]+mode,score};
-  if(!best||score>best.score){second=best;best=item}else if(!second||score>second.score)second=item;
+ if(!windows.length)return {key:"—",confidence:0};
+
+ // Votação por janelas: uma passagem de 90s não pode ser decidida por um
+ // único acorde forte ou por ruído de tela.
+ const votes=Array.from({length:24},()=>0);
+ for(const w of windows){
+  const weight=w.rms*Math.max(.25,.5+w.gap*3);
+  votes[w.best.root*2+(w.best.mode==="m"?1:0)]+=weight;
  }
- const gap=Math.max(0,best.score-(second?.score||0));
- return {key:best.key,confidence:Math.round(Math.max(45,Math.min(97,55+gap*180)))};
+ const ranked=votes.map((v,i)=>({v,root:Math.floor(i/2),mode:i%2?"m":""})).sort((a,b)=>b.v-a.v);
+ const winner=ranked[0],runner=ranked[1]||{v:0};
+ const key=NOTE_NAMES[winner.root]+winner.mode;
+
+ // Também usa a cromática média como desempate global.
+ const avg=new Float64Array(12);let weightSum=0;
+ for(const w of windows){
+  const wt=w.rms;
+  weightSum+=wt;
+  for(let i=0;i<12;i++)avg[i]+=w.ch[i]*wt;
+ }
+ for(let i=0;i<12;i++)avg[i]/=(weightSum||1);
+ const globalScores=[];
+ for(let root=0;root<12;root++)for(const mode of ["","m"])
+  globalScores.push({root,mode,score:keyScore(avg,root,mode)});
+ globalScores.sort((x,y)=>y.score-x.score);
+ const global=globalScores[0];
+
+ // Se a votação e a análise global concordarem, aumentamos a confiança.
+ // Se divergirem, preferimos a votação temporal, mas sinalizamos a incerteza.
+ const agree=global.root===winner.root&&global.mode===winner.mode;
+ const voteGap=winner.v/(runner.v||winner.v)-1;
+ const profileGap=global.score-(globalScores[1]?.score||0);
+ let confidence=48+voteGap*110+profileGap*120+(agree?12:-6);
+ confidence=Math.round(Math.max(35,Math.min(98,confidence)));
+
+ return {key,confidence};
 }
 function chordTemplate(root,kind){
  const x=new Float64Array(12);
