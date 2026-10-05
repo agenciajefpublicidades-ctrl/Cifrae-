@@ -138,3 +138,5 @@ jobs:
           git rm .github/workflows/fix-mov-analysis.yml
           git commit -m "chore: remove temporary MOV patch workflow" || true
           git push
+
+# trigger patch run
