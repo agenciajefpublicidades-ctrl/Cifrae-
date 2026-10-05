@@ -155,16 +155,24 @@ function estimateBpm(samples,sr){
  const confidence=Math.round(Math.min(99,Math.max(35,best/(onset.reduce((a,b)=>a+b*b,0)||1)*10000)));
  return {bpm:Math.round(bpm),confidence};
 }
-function estimateChords(samples,sr,key){
- const roots=[];const rootPc=NOTE_NAMES.indexOf(key.replace("m",""));const minor=key.endsWith("m");
- const scale=minor?MINOR:MAJOR;const degrees=minor?[0,3,5,7,10,8,3]:[0,2,4,5,7,9,11];
- const names=degrees.map((d,i)=>{const pc=(rootPc+d)%12;const minorChord=minor?[false,true,false,false,true,false,true][i]:[false,false,true,false,false,true,true][i];return NOTE_NAMES[pc]+(minorChord?"m":"")});
- const size=4096;const chunks=Math.min(8,Math.floor(samples.length/(sr*4)));
- for(let c=0;c<chunks;c++){const start=Math.floor(c*samples.length/chunks),frame=samples.slice(start,start+size);let best=-1,idx=0;
-  for(let r=0;r<12;r++){const tri=[r,(r+4)%12,(r+7)%12];let score=0;for(const pc of tri){let acc=0;for(let k=1;k<Math.min(900*size/sr,size/2);k+=2){const h=k*sr/size;const p=midiToPc(hzToMidi(h));if(p===pc)acc+=dft(frame,k)}score+=acc}if(score>best){best=score;idx=r}}
-  roots.push(NOTE_NAMES[idx]);
- }
- return [...new Set(roots)].slice(0,6);
+function chordCandidates(key){
+ const minorKey=key.endsWith("m"),root=NOTE_NAMES.indexOf(key.replace("m","")),scale=minorKey?MINOR:MAJOR,out=[];
+ for(let i=0;i<7;i++){const pc=(root+scale[i])%12,isMinor=minorKey?[false,true,false,false,true,false,true][i]:[false,false,true,false,false,true,true][i];out.push({name:NOTE_NAMES[pc]+(isMinor?"m":""),root:pc,minor:isMinor});}
+ return out;
+}
+function segmentChroma(frame,sr){
+ const size=frame.length,chroma=new Float64Array(12);
+ for(let pc=0;pc<12;pc++)for(let oct=2;oct<=5;oct++){const midi=12*oct+pc,hz=440*Math.pow(2,(midi-69)/12);if(hz<75||hz>1200)continue;const k=Math.max(1,Math.round(hz*size/sr)),w=2*Math.PI*k/size;let re=0,im=0;for(let n=0;n<size;n+=8){const v=frame[n]*(0.5-0.5*Math.cos(2*Math.PI*n/(size-1))),q=w*n;re+=v*Math.cos(q);im-=v*Math.sin(q)}chroma[pc]+=Math.hypot(re,im)/(1+hz/700)}
+ const total=chroma.reduce((x,y)=>x+y,0)||1;for(let i=0;i<12;i++)chroma[i]/=total;return chroma;
+}
+function scoreChord(chroma,c){
+ const third=(c.root+(c.minor?3:4))%12,fifth=(c.root+7)%12;let s=chroma[c.root]*1.8+chroma[third]*1.15+chroma[fifth]*.9;for(let i=0;i<12;i++)if(i!==c.root&&i!==third&&i!==fifth)s-=chroma[i]*.18;return s;
+}
+function estimateChordProgression(samples,sr,key){
+ const candidates=chordCandidates(key),seg=Math.max(4096,Math.min(8192,Math.round(sr*2.5))),segments=[];
+ for(let start=0;start+Math.round(sr*1.2)<samples.length;start+=seg){const frame=samples.subarray(start,Math.min(samples.length,start+seg)),chroma=segmentChroma(frame,sr);let best=candidates[0],bs=-Infinity;for(const cc of candidates){const sc=scoreChord(chroma,cc);if(sc>bs){bs=sc;best=cc}}segments.push({start:start/sr,end:Math.min(samples.length,start+seg)/sr,chord:best.name,score:bs})}
+ for(let i=1;i<segments.length-1;i++)if(segments[i-1].chord===segments[i+1].chord&&segments[i].score<segments[i-1].score*.94)segments[i].chord=segments[i-1].chord;
+ const merged=[];for(const x of segments){const last=merged[merged.length-1];if(last&&last.chord===x.chord)last.end=x.end;else merged.push({...x})}return merged;
 }
 function diatonicChords(key){const minor=key.endsWith("m");const root=NOTE_NAMES.indexOf(key.replace("m",""));const intervals=minor?[0,2,3,5,7,8,10]:[0,2,4,5,7,9,11];const suffixes=minor?["m","dim","","m","m","",""]:["","m","m","","","m","dim"];return intervals.map((d,i)=>NOTE_NAMES[(root+d)%12]+suffixes[i]).slice(0,7);}
 async function analyzeVideoLive(video){
@@ -235,7 +243,7 @@ btn.addEventListener("click",async()=>{
   if(decoded.numberOfChannels>1){mono=new Float32Array(decoded.length);for(let ch=0;ch<decoded.numberOfChannels;ch++){const d=decoded.getChannelData(ch);for(let i=0;i<mono.length;i++)mono[i]+=d[i]/decoded.numberOfChannels}}
   status.textContent="Estimando BPM e tonalidade...";bar.style.width="55%";
   const bpm=estimateBpm(mono,decoded.sampleRate);const key=estimateKey(mono,decoded.sampleRate);bar.style.width="78%";
-  const chords=estimateChords(mono,decoded.sampleRate,key.key);bar.style.width="100%";
+  const progression=estimateChordProgression(mono,decoded.sampleRate,key.key);const chords=[...new Set(progression.map(x=>x.chord))];window.cifraeProgression=progression;window.cifraeAudioDuration=decoded.duration;bar.style.width="100%";
   $("key").textContent=key.key;$("keyConf").textContent=key.confidence+"% confiança";$("bpm").textContent=bpm.bpm||"—";$("bpmConf").textContent=(bpm.confidence||0)+"% confiança";
   $("duration").textContent=Math.floor(decoded.duration/60)+":"+String(Math.floor(decoded.duration%60)).padStart(2,"0");
   $("chords").innerHTML=chords.length?chords.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>';
