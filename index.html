@@ -239,12 +239,12 @@ async function analyzeVideoLive(video){
   analyser.connect(ctx.destination);
   video.currentTime=0;
   const freq=new Float32Array(analyser.frequencyBinCount), time=new Float32Array(analyser.fftSize), energies=[];
-  const chroma=new Float64Array(12), started=performance.now(), limit=Math.min(video.duration||20,30);
+  const chroma=new Float64Array(12), started=performance.now(), limit=Math.min(video.duration||20,30), wavePeaks=[];
   try{await video.play();}catch(e){throw new Error("O navegador bloqueou a reprodução do MOV.");}
   while(video.currentTime<limit && performance.now()-started<32000){
    analyser.getFloatFrequencyData(freq); analyser.getFloatTimeDomainData(time);
    let energy=0; for(let i=0;i<time.length;i+=4) energy+=time[i]*time[i];
-   energies.push(Math.sqrt(energy/(time.length/4)));
+   const level=Math.sqrt(energy/(time.length/4));energies.push(level);wavePeaks.push(level);
    for(let k=1;k<freq.length;k++){
     const db=freq[k]; if(db<-90)continue;
     const hz=k*ctx.sampleRate/analyser.fftSize;
@@ -271,7 +271,7 @@ async function analyzeVideoLive(video){
   const segLen=Math.max(1.5,Math.min(4,60/(bpm||100)*4));
   const progression=[];
   for(let start=0;start<duration;start+=segLen) progression.push({start,end:Math.min(duration,start+segLen),chord:chords[Math.floor(start/segLen)%chords.length],score:0});
-  return {key:bestKey,keyConf,bpm,confidence,chords,duration,progression};
+  window.cifraeWavePeaks=wavePeaks;return {key:bestKey,keyConf,bpm,confidence,chords,duration,progression};
  }finally{
   try{video.pause();}catch(e){}
   try{source&&source.disconnect();}catch(e){}
@@ -293,7 +293,7 @@ btn.addEventListener("click",async()=>{
   if(decoded.numberOfChannels>1){mono=new Float32Array(decoded.length);for(let ch=0;ch<decoded.numberOfChannels;ch++){const d=decoded.getChannelData(ch);for(let i=0;i<mono.length;i++)mono[i]+=d[i]/decoded.numberOfChannels}}
   status.textContent="Estimando BPM e tonalidade...";bar.style.width="55%";
   const bpm=estimateBpm(mono,decoded.sampleRate);const key=estimateKey(mono,decoded.sampleRate);bar.style.width="78%";
-  const progression=estimateChordProgression(mono,decoded.sampleRate,key.key);const chords=[...new Set(progression.map(x=>x.chord))];window.cifraeProgression=progression;window.cifraeAudioDuration=decoded.duration;bar.style.width="100%";
+  const progression=estimateChordProgression(mono,decoded.sampleRate,key.key);const chords=[...new Set(progression.map(x=>x.chord))];const peakCount=1600,step=Math.max(1,Math.floor(mono.length/peakCount));window.cifraeWavePeaks=Array.from({length:Math.min(peakCount,Math.ceil(mono.length/step))},(_,i)=>{let p=0,end=Math.min(mono.length,(i+1)*step);for(let j=i*step;j<end;j+=4)p=Math.max(p,Math.abs(mono[j]));return p});window.cifraeProgression=progression;window.cifraeAudioDuration=decoded.duration;drawWave();bar.style.width="100%";
   $("key").textContent=key.key;$("keyConf").textContent=key.confidence+"% confiança";$("bpm").textContent=bpm.bpm||"—";$("bpmConf").textContent=(bpm.confidence||0)+"% confiança";
   $("duration").textContent=Math.floor(decoded.duration/60)+":"+String(Math.floor(decoded.duration%60)).padStart(2,"0");
   $("chords").innerHTML=chords.length?chords.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>';
@@ -303,8 +303,8 @@ btn.addEventListener("click",async()=>{
 });
 
 function fmtTime(sec){sec=Math.max(0,Math.floor(sec||0));return Math.floor(sec/60)+":"+String(sec%60).padStart(2,"0")}
-function syncStudioFile(f){$("studioSong").textContent=f.name;["studioPlay","studioBack","studioForward","studioStop"].forEach(id=>$(id).disabled=false);$("openBand").disabled=true}
-function drawWave(){const cv=$("waveCanvas"),ctx=cv.getContext("2d");const w=cv.clientWidth*devicePixelRatio,h=cv.clientHeight*devicePixelRatio;cv.width=w;cv.height=h;ctx.clearRect(0,0,w,h);ctx.strokeStyle="rgba(122,239,155,.62)";ctx.lineWidth=1.4*devicePixelRatio;ctx.beginPath();for(let x=0;x<w;x+=3){const y=h/2+Math.sin(x*.055)*h*.12+Math.sin(x*.013)*h*.18;ctx.lineTo(x,y)}ctx.stroke()}
+function syncStudioFile(f){window.cifraeWavePeaks=[];$("studioSong").textContent=f.name;["studioPlay","studioBack","studioForward","studioStop"].forEach(id=>$(id).disabled=false);$("openBand").disabled=true;drawWave()}
+function drawWave(){const cv=$("waveCanvas"),ctx=cv.getContext("2d");const w=cv.clientWidth*devicePixelRatio,h=cv.clientHeight*devicePixelRatio;cv.width=w;cv.height=h;ctx.clearRect(0,0,w,h);const peaks=window.cifraeWavePeaks||[];ctx.strokeStyle="rgba(122,239,155,.72)";ctx.lineWidth=Math.max(1,devicePixelRatio);ctx.beginPath();if(peaks.length){for(let x=0;x<w;x+=2){const i=Math.min(peaks.length-1,Math.floor(x/w*peaks.length));const a=Math.max(.03,Math.min(1,peaks[i]));const y=h/2-a*h*.38;ctx.moveTo(x,y);ctx.lineTo(x,h-y)}}else{for(let x=0;x<w;x+=3){const y=h/2+Math.sin(x*.055)*h*.12+Math.sin(x*.013)*h*.18;ctx.lineTo(x,y)}}ctx.stroke()}
 function renderChordLane(){const box=$("chordLaneInner"),prog=window.cifraeProgression||[];box.innerHTML="";if(!prog.length){box.innerHTML='<span class="studioBadge">Os acordes aparecerão aqui após a análise.</span>';return}prog.forEach((x,i)=>{const s=document.createElement("span");s.className="timelineChord";s.dataset.start=x.start;s.dataset.end=x.end;s.textContent=x.chord;box.appendChild(s)})}
 function syncStudioUI(){const k=$("key").textContent,b=$("bpm").textContent,d=$("duration").textContent;$("studioKey").textContent=k;$("studioBpm").textContent=b;$("studioTime").textContent=d;$("waveDuration").textContent=d;$("metricKey").textContent=k;$("metricBpm").textContent=b;$("metricChords").textContent=(window.cifraeProgression||[]).length||$("chords").children.length;renderChordLane();$("openBand").disabled=false}
 function currentMedia(){return isVideoFile?videoPlayer:player}
