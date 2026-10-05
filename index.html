@@ -500,6 +500,8 @@ async function analyzeVideoLive(video){
   source.connect(processor);
   processor.connect(output);
   output.connect(ctx.destination);
+  // Rota o áudio diretamente para a saída e mantém essa rota após a análise.
+  source.connect(ctx.destination);
 
   processor.onaudioprocess=e=>{
    if(!collecting)return;
@@ -563,9 +565,10 @@ async function analyzeVideoLive(video){
   try{video.pause()}catch(e){}
   try{processor&&(processor.onaudioprocess=null)}catch(e){}
   // Não fecha o contexto: o elemento continua com sua saída de áudio no Safari.
-  try{source&&source.disconnect()}catch(e){}
   try{processor&&processor.disconnect()}catch(e){}
+  // NÃO desconectar o source: o áudio do MOV continua passando pelo AudioContext.
   window.cifraeAnalysisCtx=ctx;
+  window.cifraeAnalysisSource=source;
  }
 }
 btn.addEventListener("click",async()=>{
