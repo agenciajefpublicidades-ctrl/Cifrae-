@@ -100,8 +100,10 @@ main>h1,main>header+h1,main>header+h1+p{display:none}
 <p>Carregue os WAV/MP3 exportados do seu estúdio. O Cifraê usa o áudio real no lugar do instrumento sintético quando houver um arquivo correspondente.</p>
 <label class="upload" for="realAudioFiles"><strong>Adicionar faixas reais</strong><small>Selecione uma ou várias faixas · nomes reconhecidos: Violão, Guitarra, Contrabaixo, Cavaquinho, Banjo, Bateria, Percussão e Sopro</small></label>
 <input id="realAudioFiles" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.aac,.flac" multiple>
+<div style="margin-top:12px"><button id="loadFreeLibrary" class="secondary">🎸 Carregar biblioteca gratuita</button></div>
 <div id="realAudioList" style="display:grid;gap:8px;margin-top:12px"></div>
 <p id="realAudioStatus" class="notice">Nenhuma faixa real carregada.</p>
+<p class="notice">Biblioteca online: guitarra elétrica e contrabaixo com amostras reais. Fonte: ToneJS-Instruments / CC BY 3.0 — atribuição incluída no Cifraê.</p>
 </section>
 <section id="acompanhamento" class="panel" style="display:none"><h2>🎚️ Acompanhamento</h2><p>Escolha os instrumentos que acompanharão a harmonia detectada.</p><div id="instrumentList" style="display:grid;gap:10px"></div><div class="actions"><button id="generateBand">✨ Gerar acompanhamento</button><button class="secondary" id="stopBand">■ Parar</button></div><p id="bandStatus" class="notice">Aguardando instrumentos.</p></section>
 <script>(()=>{const I=[['🎸','Violão'],['🎸','Guitarra'],['🎸','Contrabaixo'],['🪕','Cavaquinho'],['🪕','Banjo'],['🥁','Bateria'],['🪘','Percussão'],['🎷','Sopro']],p=document.getElementById('acompanhamento'),l=document.getElementById('instrumentList'),s=document.getElementById('bandStatus');
@@ -136,7 +138,60 @@ async function prepareBandAudio(){
  try{bandMaster.gain.cancelScheduledValues(bandCtx.currentTime);bandMaster.gain.setTargetAtTime(1.05,bandCtx.currentTime,.015)}catch(e){bandMaster.gain.value=1.05}
  return media;
 }
-const realFiles=document.getElementById('realAudioFiles'),realList=document.getElementById('realAudioList'),realStatus=document.getElementById('realAudioStatus');
+const realFiles=document.getElementById('realAudioFiles'),realList=document.getElementById('realAudioList'),realStatus=document.getElementById('realAudioStatus'),freeLibraryBtn=document.getElementById('loadFreeLibrary');
+const remoteSampleBanks=new Map();
+const REMOTE_SAMPLE_LIBRARY={
+ 'Guitarra':{
+  A2:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/guitar-electric/A2.wav',
+  C3:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/guitar-electric/C3.wav',
+  E2:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/guitar-electric/E2.wav',
+  Fs2:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/guitar-electric/Fs2.wav',
+  A3:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/guitar-electric/A3.wav',
+  C4:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/guitar-electric/C4.wav',
+  A4:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/guitar-electric/A4.wav',
+  C5:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/guitar-electric/C5.wav'
+ },
+ 'Contrabaixo':{
+  E1:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/bass-electric/E1.wav',
+  G1:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/bass-electric/G1.wav',
+  As1:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/bass-electric/As1.wav',
+  Cs2:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/bass-electric/Cs2.wav',
+  E2:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/bass-electric/E2.wav',
+  G2:'https://raw.githubusercontent.com/nbrosowsky/tonejs-instruments/master/samples/bass-electric/G2.wav'
+ }
+};
+function remoteNoteMidi(note){const m=/^([A-G])([s#b]?)(\d)$/.exec(note);if(!m)return 60;const pc={C:0,D:2,E:4,F:5,G:7,A:9,B:11}[m[1]]+((m[2]==='s'||m[2]==='#')?1:(m[2]==='b'?-1:0));return 12*(Number(m[3])+1)+pc}
+async function loadFreeInstrumentLibrary(){
+ if(!bandCtx||bandCtx.state==='closed')bandCtx=new(window.AudioContext||window.webkitAudioContext)();
+ await bandCtx.resume();
+ freeLibraryBtn.disabled=true;freeLibraryBtn.textContent='⏳ Carregando sons reais...';
+ let ok=0,total=0;
+ try{
+  for(const [instrument,notes] of Object.entries(REMOTE_SAMPLE_LIBRARY)){
+   const bank=new Map();
+   for(const [note,url] of Object.entries(notes)){
+    total++;
+    try{const res=await fetch(url,{mode:'cors'});if(!res.ok)throw new Error('HTTP '+res.status);const buf=await bandCtx.decodeAudioData(await res.arrayBuffer());bank.set(remoteNoteMidi(note),buf);ok++}catch(e){console.warn('Sample indisponível',url,e)}
+   }
+   if(bank.size)remoteSampleBanks.set(instrument,bank);
+  }
+  realStatus.textContent=ok?'✓ Biblioteca real carregada: '+ok+'/'+total+' samples · Guitarra e Contrabaixo prontos.':'Não foi possível carregar a biblioteca online.';
+  realList.innerHTML='';
+  for(const name of realNames){if(remoteSampleBanks.has(name)){const row=document.createElement('div');row.className='studioBadge';row.textContent='✓ '+name+' · samples reais online';realList.appendChild(row)}}
+ }finally{freeLibraryBtn.disabled=false;freeLibraryBtn.textContent='🎸 Recarregar biblioteca gratuita'}
+}
+freeLibraryBtn?.addEventListener('click',loadFreeInstrumentLibrary);
+function playRemoteSample(instrument,midi,t,d,gain){
+ const bank=remoteSampleBanks.get(instrument);if(!bank||!bank.size||!bandCtx)return false;
+ let bestMidi=null,bestDist=Infinity;for(const k of bank.keys()){const dist=Math.abs(k-midi);if(dist<bestDist){bestDist=dist;bestMidi=k}}
+ const buffer=bank.get(bestMidi),src=bandCtx.createBufferSource(),g=bandCtx.createGain(),bus=ensureBus(instrument);if(!buffer||!bus)return false;
+ src.buffer=buffer;src.playbackRate.value=Math.pow(2,(midi-bestMidi)/12);
+ const peak=Math.max(.012,gain),end=t+Math.max(.06,d);g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(peak,t+.008);g.gain.exponentialRampToValueAtTime(.0001,end);
+ src.connect(g);g.connect(bus);src.start(t);src.stop(end+.03);realSources.push(src);return true
+}
+function playRemoteChord(instrument,notes,t,d,level){
+ let count=0;for(const midi of notes){if(playRemoteSample(instrument,midi,t,d,.16*level))count++}return count
+}
 const realNames=['Violão','Guitarra','Contrabaixo','Cavaquinho','Banjo','Bateria','Percussão','Sopro'];
 function normalizeInstrumentFile(name){const n=name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');return realNames.find(x=>n.includes(x.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')))||null}
 async function loadRealInstrumentFiles(files){
@@ -169,14 +224,15 @@ document.getElementById('generateBand').onclick=async()=>{
    const offset=Math.min(startMediaTime,Math.max(0,buffer.duration-.01)),available=Math.max(.01,buffer.duration-offset);
    src.start(bandCtx.currentTime+.08,offset,available);realSources.push(src);
   }
-  const beat=Math.max(0,Number(media.currentTime)||0),bpm=Math.max(60,Math.min(180,Number(document.getElementById('bpm').textContent)||100)),beat=60/bpm,base=bandCtx.currentTime+.08;
+  const currentMediaTime=Math.max(0,Number(media.currentTime)||0),bpm=Math.max(60,Math.min(180,Number(document.getElementById('bpm').textContent)||100)),beat=60/bpm,base=bandCtx.currentTime+.08;
   const endMedia=Number.isFinite(media.duration)?media.duration:Math.max(...prog.map(x=>x.end),startMediaTime+30);let scheduled=0;
   for(const seg of prog){if(seg.end<=startMediaTime)continue;const from=Math.max(seg.start,startMediaTime),firstBeat=seg.start+Math.ceil(Math.max(0,from-seg.start)/beat-1e-7)*beat,ns=bandNotes(seg.chord);
    for(let mediaT=firstBeat;mediaT<seg.end&&mediaT<endMedia;mediaT+=beat){
     const t=base+(mediaT-startMediaTime);
     for(const card of [...l.children]){
      const controls=card.querySelector('.mixerBtns'),name=card.querySelector('b')?.textContent||'',on=controls.querySelector('[data-on]')?.textContent==='ON',muted=controls.querySelector('[data-mute]')?.classList.contains('active');const solos=[...l.querySelectorAll('[data-solo].active')],solo=controls.querySelector('[data-solo]')?.classList.contains('active');if(!on||muted||(solos.length&&!solo))continue;const level=Number(card.querySelector('input')?.value||75)/100,end=Math.min(seg.end,mediaT+beat*.92),dur=Math.max(.08,end-mediaT);
-     if(name==='Contrabaixo'){playBandNote(ns[0]-12,t,Math.min(.7,dur),'sine',.28*level,'bass',name);if(mediaT+beat<seg.end)playBandNote(ns[0],t+beat*.5,.18,'triangle',.09*level,'bass',name)}
+     if(remoteSampleBanks.has(name)){playRemoteChord(name,ns,t,Math.min(.42,dur),level)}
+     else if(name==='Contrabaixo'){playBandNote(ns[0]-12,t,Math.min(.7,dur),'sine',.28*level,'bass',name);if(mediaT+beat<seg.end)playBandNote(ns[0],t+beat*.5,.18,'triangle',.09*level,'bass',name)}
      else if(name==='Bateria'){bandKick(t,.28*level,name);bandHat(t+beat*.5,.075*level,name);bandHat(t+beat*.75,.055*level,name)}
      else if(name==='Percussão'){bandHat(t+beat*.25,.09*level,name);bandHat(t+beat*.75,.075*level,name)}
      else if(name==='Sopro'){playBandNote(ns[1],t,Math.min(.55,dur),'sawtooth',.14*level,'brass',name);playBandNote(ns[2],t+.04,Math.min(.42,dur),'sawtooth',.08*level,'brass',name)}
