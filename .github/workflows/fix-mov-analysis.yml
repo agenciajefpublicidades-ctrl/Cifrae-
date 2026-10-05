@@ -1,0 +1,140 @@
+name: Patch Cifrae MOV analysis
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/fix-mov-analysis.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Replace MOV analyzer with real sample analysis
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          p = Path("index.html")
+          text = p.read_text(encoding="utf-8")
+
+          start = text.index("async function analyzeVideoLive(video){")
+          end = text.index('btn.addEventListener("click",async()=>{', start)
+
+          new_fn = r'''async function analyzeVideoLive(video){
+ const ctx=new (window.AudioContext||window.webkitAudioContext)();
+ let source=null,processor=null,output=null,collecting=true,keepContext=true;
+ const chunks=[];
+ const duration=isFinite(video.duration)?video.duration:20;
+ const limit=Math.min(duration,90);
+ try{
+  await ctx.resume();
+  // Usa o próprio elemento de mídia para manter a saída de áudio audível no Safari/iPhone.
+  // O ScriptProcessor coleta amostras reais enquanto o MOV toca.
+  source=ctx.createMediaElementSource(video);
+  processor=ctx.createScriptProcessor(4096,2,1);
+  output=ctx.createGain();
+  output.gain.value=1;
+  source.connect(processor);
+  processor.connect(output);
+  output.connect(ctx.destination);
+
+  processor.onaudioprocess=e=>{
+   if(!collecting)return;
+   const input=e.inputBuffer;
+   const n=input.length;
+   const mono=new Float32Array(n);
+   const ch0=input.getChannelData(0);
+   if(input.numberOfChannels>1){
+    const ch1=input.getChannelData(1);
+    for(let i=0;i<n;i++)mono[i]=(ch0[i]+ch1[i])*.5;
+   }else mono.set(ch0);
+   chunks.push(mono);
+  };
+
+  video.currentTime=0;
+  video.muted=false;
+  video.volume=1;
+  const wavePeaks=[],started=performance.now();
+  try{await video.play();}catch(e){throw new Error("O navegador bloqueou a reprodução do MOV.");}
+
+  while(video.currentTime<limit && performance.now()-started<95000){
+   const level=Math.max(0,Math.min(1,video.volume));
+   wavePeaks.push(level);
+   bar.style.width=Math.min(95,28+(video.currentTime/Math.max(1,limit))*67)+"%";
+   await new Promise(r=>setTimeout(r,80));
+  }
+
+  video.pause();
+  collecting=false;
+
+  const total=chunks.reduce((n,x)=>n+x.length,0);
+  if(total<ctx.sampleRate*.7)throw new Error("Não consegui capturar áudio suficiente do MOV.");
+
+  const samples=new Float32Array(total);
+  let off=0;
+  for(const c of chunks){samples.set(c,off);off+=c.length}
+
+  // Agora o MOV passa pelo mesmo motor harmônico usado no áudio:
+  // tom real -> candidatos de acorde -> progressão temporal.
+  const key=estimateKey(samples,ctx.sampleRate);
+  const progression=estimateChordProgression(samples,ctx.sampleRate,key.key);
+  const chordNames=[...new Set(progression.map(x=>x.chord))];
+
+  let bpmData=null;
+  try{bpmData=estimateBpm(samples,ctx.sampleRate)}catch(e){console.warn("BPM MOV:",e)}
+  const bpm=bpmData?.bpm||null;
+  const confidence=bpmData?.confidence||0;
+  const keyConf=key.confidence||0;
+  const safeDuration=isFinite(video.duration)?video.duration:(samples.length/ctx.sampleRate);
+
+  window.cifraeWavePeaks=wavePeaks;
+  return {
+   key:key.key,
+   keyConf,
+   bpm,
+   confidence,
+   chords:chordNames,
+   duration:safeDuration,
+   progression
+  };
+ }finally{
+  collecting=false;
+  try{video.pause()}catch(e){}
+  try{processor&&(processor.onaudioprocess=null)}catch(e){}
+  try{source&&source.disconnect()}catch(e){}
+  try{processor&&processor.disconnect()}catch(e){}
+  // Mantém o contexto aberto para que o elemento continue com áudio após a análise.
+  // O mixer usa outro AudioContext, evitando conflito com o Safari.
+  if(!keepContext){
+   try{await ctx.close()}catch(e){}
+  }else{
+   window.cifraeAnalysisCtx=ctx;
+   window.cifraeAnalysisSource=source;
+  }
+ }
+}
+'''
+
+          p.write_text(text[:start] + new_fn + text[end:], encoding="utf-8")
+          PY
+
+      - name: Commit and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "fix: analyze MOV audio for real chord progression" || true
+          git rm .github/workflows/fix-mov-analysis.yml
+          git commit -m "chore: remove temporary MOV patch workflow" || true
+          git push
