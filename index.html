@@ -254,7 +254,8 @@ realFiles?.addEventListener('change',e=>loadRealInstrumentFiles(e.target.files))
 document.getElementById('generateBand').onclick=async()=>{
  const prog=window.cifraeProgression||[];if(!prog.length){s.textContent='Faça primeiro uma análise para gerar a banda.';return}
  try{
-  const media=await prepareBandAudio();if(bandTimer){clearTimeout(bandTimer);bandTimer=null}\n  warmCifraeChordLibrary();
+  const media=await prepareBandAudio();if(bandTimer){clearTimeout(bandTimer);bandTimer=null}
+  warmCifraeChordLibrary();
   if(media.paused)await media.play();
   stopRealSources();
   const startMediaTime=Math.max(0,Number(media.currentTime)||0);
