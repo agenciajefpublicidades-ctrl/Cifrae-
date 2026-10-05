@@ -62,7 +62,7 @@ function bandNotes(name){const m=/^([A-G]#?)(m?)$/.exec(name);if(!m)return [60,6
 function playBandNote(m,t,d,type,gain){const o=bandCtx.createOscillator(),g=bandCtx.createGain();o.type=type;o.frequency.value=midiHz(m);g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(Math.max(.0002,gain),t+.025);g.gain.exponentialRampToValueAtTime(.0001,t+d);o.connect(g);g.connect(bandMaster);o.start(t);o.stop(t+d+.03)}
 function bandHit(t,gain){playBandNote(45,t,.09,'triangle',gain)}
 document.getElementById('generateBand').onclick=async()=>{const prog=window.cifraeProgression||[];if(!prog.length){s.textContent='Faça primeiro uma análise para gerar a banda.';return}if(bandCtx)try{await bandCtx.close()}catch(e){}bandCtx=new(window.AudioContext||window.webkitAudioContext)();await bandCtx.resume();bandMaster=bandCtx.createGain();bandMaster.gain.value=.7;bandMaster.connect(bandCtx.destination);const bpm=Number(document.getElementById('bpm').textContent)||100,beat=60/bpm,base=bandCtx.currentTime+.12,rows=[...l.querySelectorAll('[data-on]')];for(const seg of prog){const ns=bandNotes(seg.chord);for(let t=base+seg.start;t<base+seg.end;t+=beat){rows.forEach(b=>{if(b.textContent!=='ON')return;const row=b.parentElement,name=row.querySelector('b').textContent,vol=Number(row.querySelector('input').value)/100*.055;if(name==='Contrabaixo')playBandNote(ns[0]-12,t,Math.min(beat*.8,base+seg.end-t),'sine',vol*1.8);else if(name==='Bateria')bandHit(t,vol*1.8);else if(name==='Percussão'){bandHit(t,vol);bandHit(t+beat/2,vol*.65)}else if(name==='Sopro')playBandNote(ns[1],t,Math.min(beat*.65,base+seg.end-t),'sawtooth',vol*.6);else {const pat=[0,1,2,1];pat.forEach((n,j)=>{const tt=t+j*beat/4;if(tt<base+seg.end)playBandNote(ns[n],tt,Math.min(beat*.2,base+seg.end-tt),'triangle',vol)})}})}}s.textContent='▶ Banda tocando · seguindo a progressão detectada.'};
-document.getElementById('stopBand').onclick=async()=>{if(bandCtx)try{await bandCtx.close()}catch(e){}bandCtx=null;s.textContent='Acompanhamento parado.'};window.showAccompaniment=()=>p.style.display='block'})();</script>
+document.getElementById('stopBand').onclick=async()=>{if(bandCtx)try{await bandCtx.close()}catch(e){}bandCtx=null;s.textContent='Acompanhamento parado.'};window.showAccompaniment=()=>{p.style.display='block';p.scrollIntoView({behavior:'smooth',block:'center'})}})();</script>
 </main>
 <script>
 const $=id=>document.getElementById(id),file=$("file"),player=$("player"),btn=$("analyze"),clear=$("clear"),status=$("status"),bar=$("bar"),result=$("result");
@@ -227,7 +227,11 @@ async function analyzeVideoLive(video){
   const confidence=Math.min(92,Math.max(35,Math.round((bestCorr/(energies.reduce((a,b)=>a+b*b,0)||1))*10000)));
   const keyConf=Math.min(92,Math.max(35,Math.round(100*Math.max(0,Math.min(1,best/total)))));
   const chords=diatonicChords(bestKey);
-  return {key:bestKey,keyConf,bpm,confidence,chords,duration:video.duration};
+  const duration=isFinite(video.duration)?video.duration:Math.max(8,limit);
+  const segLen=Math.max(1.5,Math.min(4,60/(bpm||100)*4));
+  const progression=[];
+  for(let start=0;start<duration;start+=segLen) progression.push({start,end:Math.min(duration,start+segLen),chord:chords[Math.floor(start/segLen)%chords.length],score:0});
+  return {key:bestKey,keyConf,bpm,confidence,chords,duration,progression};
  }finally{
   try{video.pause();}catch(e){}
   try{source&&source.disconnect();}catch(e){}
@@ -241,7 +245,7 @@ btn.addEventListener("click",async()=>{
  try{
   if(isVideoFile){
    status.textContent="MOV/vídeo detectado. Analisando o áudio pelo navegador...";bar.style.width="28%";
-   const live=await analyzeVideoLive(videoPlayer); bar.style.width="100%";
+   const live=await analyzeVideoLive(videoPlayer); window.cifraeProgression=live.progression||[]; window.cifraeAudioDuration=live.duration||0; bar.style.width="100%";
    $("key").textContent=live.key; $("keyConf").textContent=live.keyConf+"% confiança"; $("bpm").textContent=live.bpm||"—"; $("bpmConf").textContent=(live.confidence||0)+"% confiança"; $("duration").textContent=isFinite(live.duration)?Math.floor(live.duration/60)+":"+String(Math.floor(live.duration%60)).padStart(2,"0"):"—"; $("chords").innerHTML=live.chords.length?live.chords.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>'; result.style.display="block";window.showAccompaniment?.(); status.textContent="Análise do MOV concluída. Como o processamento é ao vivo, use os resultados como estimativa."; result.scrollIntoView({behavior:"smooth",block:"nearest"}); return;
   }
   const ctx=new (window.AudioContext||window.webkitAudioContext)();const raw=await f.arrayBuffer();bar.style.width="28%";const decoded=await ctx.decodeAudioData(raw);
