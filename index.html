@@ -96,7 +96,7 @@ main>h1,main>header+h1,main>header+h1+p{display:none}
 <div class="footer">Cifraê V5 Real · processamento local · nenhum áudio é enviado por este protótipo.</div>
 
 <section id="acompanhamento" class="panel" style="display:none"><h2>🎚️ Acompanhamento</h2><p>Escolha os instrumentos que acompanharão a harmonia detectada.</p><div id="instrumentList" style="display:grid;gap:10px"></div><div class="actions"><button id="generateBand">✨ Gerar acompanhamento</button><button class="secondary" id="stopBand">■ Parar</button></div><p id="bandStatus" class="notice">Aguardando instrumentos.</p></section>
-<script>(()=>{const I=[['🎸','Violão'],['🎸','Guitarra'],['🎸','Contrabaixo'],['🪕','Cavaquinho'],['🪕','Banjo'],['🥁','Bateria'],['🪘','Percussão'],['🎷','Sopro']],p=document.getElementById('acompanhamento'),l=document.getElementById('instrumentList'),s=document.getElementById('bandStatus');I.forEach((x,i)=>{let r=document.createElement('div');r.style='display:grid;grid-template-columns:28px 1fr 90px 88px;align-items:center;gap:9px;background:#26382b;border-radius:14px;padding:11px';r.innerHTML='<span>'+x[0]+'</span><b>'+x[1]+'</b><input type="range" min="0" max="100" value="75" aria-label="Volume '+x[1]+'"><div class="mixerBtns"><button class="secondary" data-mute>M</button><button class="secondary" data-solo>S</button><button class="secondary" data-on>ON</button></div>';l.appendChild(r)});l.onclick=e=>{let b=e.target.closest('button');if(!b)return;if(b.dataset.on!==undefined){let on=b.textContent==='ON';b.textContent=on?'OFF':'ON';b.style.opacity=on?.55:1}if(b.dataset.mute!==undefined)b.classList.toggle('active');if(b.dataset.solo!==undefined)b.classList.toggle('active')};let bandCtx=null,bandMaster=null,bandCompressor=null,bandTimer=null;
+<script>(()=>{const I=[['🎸','Violão'],['🎸','Guitarra'],['🎸','Contrabaixo'],['🪕','Cavaquinho'],['🪕','Banjo'],['🥁','Bateria'],['🪘','Percussão'],['🎷','Sopro']],p=document.getElementById('acompanhamento'),l=document.getElementById('instrumentList'),s=document.getElementById('bandStatus');I.forEach((x,i)=>{let r=document.createElement('div');r.style='display:grid;grid-template-columns:28px 1fr 90px 88px;align-items:center;gap:9px;background:#26382b;border-radius:14px;padding:11px';r.innerHTML='<span>'+x[0]+'</span><b>'+x[1]+'</b><input type="range" min="0" max="100" value="75" aria-label="Volume '+x[1]+'"><div class="mixerBtns"><button class="secondary" data-mute>M</button><button class="secondary" data-solo>S</button><button class="secondary" data-on>ON</button></div>';l.appendChild(r)});l.onclick=e=>{let b=e.target.closest('button');if(!b)return;if(b.dataset.on!==undefined){let on=b.textContent==='ON';b.textContent=on?'OFF':'ON';b.style.opacity=on?.55:1}if(b.dataset.mute!==undefined)b.classList.toggle('active');if(b.dataset.solo!==undefined)b.classList.toggle('active')};let bandCtx=null,bandMaster=null,bandCompressor=null,bandTimer=null,bandMediaGain=null; const bandMediaSources=new WeakMap();
 function midiHz(m){return 440*Math.pow(2,(m-69)/12)}
 function bandNotes(name){
  const m=/^([A-G]#?)(m?)$/.exec(name);
@@ -106,10 +106,7 @@ function bandNotes(name){
 }
 function stopBandInternal(message='Acompanhamento parado.'){
  if(bandTimer){clearTimeout(bandTimer);bandTimer=null}
- if(bandCtx){
-  try{bandCtx.close()}catch(e){}
- }
- bandCtx=null;bandMaster=null;bandCompressor=null;
+ if(bandCtx&&bandMaster){try{bandMaster.gain.setTargetAtTime(.0001,bandCtx.currentTime,.025)}catch(e){bandMaster.gain.value=.0001}}
  if(message)s.textContent=message;
 }
 function playBandNote(m,t,d,type,gain,channel){
@@ -146,13 +143,27 @@ async function prepareBandAudio(){
  const media=currentMedia();
  if(!media?.src)throw new Error('Nenhum áudio carregado.');
  if(!bandCtx||bandCtx.state==='closed'){
-  bandCtx=new(window.AudioContext||window.webkitAudioContext)();
+  bandCtx=window.cifraeBandCtx&&window.cifraeBandCtx.state!=='closed'?window.cifraeBandCtx:new(window.AudioContext||window.webkitAudioContext)();
   bandMaster=bandCtx.createGain();bandMaster.gain.value=.95;
   bandCompressor=bandCtx.createDynamicsCompressor();
   bandCompressor.threshold.value=-18;bandCompressor.knee.value=16;bandCompressor.ratio.value=5;bandCompressor.attack.value=.004;bandCompressor.release.value=.18;
   bandMaster.connect(bandCompressor);bandCompressor.connect(bandCtx.destination);
+  if(window.cifraeBandMediaSource){
+   try{window.cifraeBandMediaSource.disconnect()}catch(e){}
+   window.cifraeBandMediaSource.connect(bandCompressor);
+   bandMediaSources.set(media,window.cifraeBandMediaSource);
+  }
  }
+ if(!bandMediaSources.has(media)){
+  const mediaSource=bandCtx.createMediaElementSource(media);
+  const mediaGain=bandCtx.createGain();
+  mediaGain.gain.value=.92;
+  mediaSource.connect(mediaGain);mediaGain.connect(bandCompressor);
+  bandMediaSources.set(media,mediaSource);
+ }
+ if(!bandMediaGain){bandMediaGain=bandCtx.createGain();bandMediaGain.gain.value=1;bandMediaGain.connect(bandCompressor)}
  await bandCtx.resume();
+ try{bandMaster.gain.setTargetAtTime(.95,bandCtx.currentTime,.02)}catch(e){bandMaster.gain.value=.95}
  return media;
 }
 document.getElementById('generateBand').onclick=async()=>{
@@ -187,20 +198,20 @@ document.getElementById('generateBand').onclick=async()=>{
      const end=Math.min(seg.end,mediaT+beat*.9);
      const dur=Math.max(.06,end-mediaT);
      if(name==='Contrabaixo'){
-      playBandNote(ns[0]-12,t,Math.min(.62,dur),'sine',.12*level,'bass');
-      if(mediaT+beat<seg.end)playBandNote(ns[0],t+beat*.5,.16,'triangle',.045*level,'bass');
+      playBandNote(ns[0]-12,t,Math.min(.62,dur),'sine',.17*level,'bass');
+      if(mediaT+beat<seg.end)playBandNote(ns[0],t+beat*.5,.16,'triangle',.06*level,'bass');
      }else if(name==='Bateria'){
-      bandKick(t,.13*level);
-      bandHat(t+beat*.5,.035*level);bandHat(t+beat*.75,.025*level);
+      bandKick(t,.17*level);
+      bandHat(t+beat*.5,.05*level);bandHat(t+beat*.75,.04*level);
      }else if(name==='Percussão'){
-      bandHat(t+beat*.25,.045*level);bandHat(t+beat*.75,.035*level);
+      bandHat(t+beat*.25,.06*level);bandHat(t+beat*.75,.05*level);
      }else if(name==='Sopro'){
-      playBandNote(ns[1],t,Math.min(.48,dur),'sawtooth',.065*level,'brass');
+      playBandNote(ns[1],t,Math.min(.48,dur),'sawtooth',.09*level,'brass');
      }else{
       const pat=[0,1,2,1];
       pat.forEach((n,j)=>{
        const tt=t+j*beat/4;
-       if(tt<base+(seg.end-startMediaTime))playBandNote(ns[n],tt,Math.min(.28,beat*.24),'triangle',.055*level,'strings');
+       if(tt<base+(seg.end-startMediaTime))playBandNote(ns[n],tt,Math.min(.28,beat*.24),'triangle',.075*level,'strings');
       });
      }
      scheduled++;
@@ -340,7 +351,7 @@ function estimateChordProgression(samples,sr,key){
 function diatonicChords(key){const minor=key.endsWith("m");const root=NOTE_NAMES.indexOf(key.replace("m",""));const intervals=minor?[0,2,3,5,7,8,10]:[0,2,4,5,7,9,11];const suffixes=minor?["m","dim","","m","m","",""]:["","m","m","","","m","dim"];return intervals.map((d,i)=>NOTE_NAMES[(root+d)%12]+suffixes[i]).slice(0,7);}
 async function analyzeVideoLive(video){
  const ctx=new (window.AudioContext||window.webkitAudioContext)();
- let analyser=ctx.createAnalyser(), source=null, stream=null;
+ let analyser=ctx.createAnalyser(), source=null, stream=null,keepForBand=false;
  analyser.fftSize=4096; analyser.smoothingTimeConstant=0.12;
  try{
   await ctx.resume();
@@ -351,6 +362,7 @@ async function analyzeVideoLive(video){
    source=ctx.createMediaStreamSource(stream);
   }else{
    source=ctx.createMediaElementSource(video);
+   keepForBand=true;
   }
   source.connect(analyser);
   analyser.connect(ctx.destination);
@@ -394,7 +406,12 @@ async function analyzeVideoLive(video){
   try{source&&source.disconnect();}catch(e){}
   try{analyser.disconnect();}catch(e){}
   try{stream&&stream.getTracks().forEach(t=>t.stop());}catch(e){}
-  try{await ctx.close();}catch(e){}
+  if(keepForBand){
+   window.cifraeBandCtx=ctx;
+   window.cifraeBandMediaSource=source;
+  }else{
+   try{await ctx.close();}catch(e){}
+  }
  }
 }
 btn.addEventListener("click",async()=>{
@@ -429,6 +446,8 @@ $("studioPlay").onclick=async()=>{const m=currentMedia();if(!m.src)return;try{if
 $("studioStop").onclick=()=>{const m=currentMedia();m.pause();try{m.currentTime=0}catch(e){}$("studioPlay").textContent="▶";$("playhead").style.left="0%"}
 $("studioBack").onclick=()=>{const m=currentMedia();m.playbackRate=Math.max(.5,m.playbackRate-.1);$("studioSpeed").textContent=m.playbackRate.toFixed(2)+"×"}
 $("studioForward").onclick=()=>{const m=currentMedia();m.playbackRate=Math.min(1.5,m.playbackRate+.1);$("studioSpeed").textContent=m.playbackRate.toFixed(2)+"×"}
+[player,videoPlayer].forEach(m=>m.addEventListener("pause",()=>{if(bandCtx&&bandMaster&&m===currentMedia())stopBandInternal("Acompanhamento pausado junto com o áudio.")}));
+[player,videoPlayer].forEach(m=>m.addEventListener("ended",()=>{if(bandCtx&&bandMaster&&m===currentMedia())stopBandInternal("Acompanhamento finalizado.")}));
 [player,videoPlayer].forEach(m=>m.addEventListener("timeupdate",()=>{if(!m.duration)return;$("playhead").style.left=(m.currentTime/m.duration*100)+"%";$("studioTime").textContent=fmtTime(m.currentTime)+"/"+fmtTime(m.duration);document.querySelectorAll(".timelineChord").forEach(ch=>ch.classList.toggle("active",m.currentTime>=Number(ch.dataset.start)&&m.currentTime<Number(ch.dataset.end)));if(m.ended)$("studioPlay").textContent="▶"}));
 $("openBand").onclick=()=>{$("acompanhamento").style.display="block";$("acompanhamento").scrollIntoView({behavior:"smooth",block:"center"})};
 window.addEventListener("resize",drawWave);drawWave();
