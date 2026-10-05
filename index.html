@@ -316,99 +316,122 @@ function analyzeSpectrum(data,sr){
  return {chroma,mag};
 }
 function dft(frame,k){let re=0,im=0;for(let n=0;n<frame.length;n++){const a=2*Math.PI*k*n/frame.length;re+=frame[n]*Math.cos(a);im-=frame[n]*Math.sin(a)}return Math.hypot(re,im)}
-function estimateKey(samples,sr){
- // Modo "voz/tom": reduz ruído, transientes e graves não-harmônicos antes de montar o perfil de notas.
- const size=4096, step=2048, maxSec=Math.min(90,samples.length/sr), total=Math.floor(maxSec*sr);
- const sum=new Float64Array(12), frameScores=[];
- const hann=i=>0.5*(1-Math.cos(2*Math.PI*i/(size-1)));
- const median=a=>{if(!a.length)return 0;const b=[...a].sort((x,y)=>x-y);return b[Math.floor(b.length/2)]};
- for(let start=0;start+size<total;start+=step){
-  const frame=samples.subarray(start,start+size);
-  let rms=0, zc=0, prev=frame[0]||0;
-  for(let i=0;i<size;i++){const v=frame[i]*hann(i);rms+=v*v;if(i&&((v>=0)!==(prev>=0)))zc++;prev=v}
-  rms=Math.sqrt(rms/size);
-  if(rms<0.008)continue;
-  // Voz/melodia tende a ter pitch estável; ruído e percussão têm mais cruzamentos de zero.
-  const zcr=zc/size;
-  if(zcr>0.22)continue;
-  const chroma=new Float64Array(12);
-  const limit=Math.min(Math.floor(1200*size/sr),size/2-1);
-  for(let k=1;k<=limit;k++){
-   const h=k*sr/size;
-   if(h<75||h>1200)continue;
-   let re=0,im=0;
-   for(let n=0;n<size;n+=4){
-    const v=frame[n]*hann(n),a=2*Math.PI*k*n/size;
-    re+=v*Math.cos(a); im-=v*Math.sin(a);
+function fftReal(frame){
+ const n=frame.length, re=new Float64Array(frame), im=new Float64Array(n);
+ for(let i=0,j=0;i<n;i++){
+  if(i<j){const tr=re[i];re[i]=re[j];re[j]=tr}
+  let bit=n>>1;for(;j&bit;bit>>=1)j^=bit;j^=bit;
+ }
+ for(let len=2;len<=n;len<<=1){
+  const ang=-2*Math.PI/len,wr0=Math.cos(ang),wi0=Math.sin(ang);
+  for(let i=0;i<n;i+=len){
+   let wr=1,wi=0,half=len>>1;
+   for(let j=0;j<half;j++){
+    const a=i+j,b=a+half,tr=re[b]*wr-im[b]*wi,ti=re[b]*wi+im[b]*wr;
+    re[b]=re[a]-tr;im[b]=im[a]-ti;re[a]+=tr;im[a]+=ti;
+    const nr=wr*wr0-wi*wi0;wi=wr*wi0+wi*wr0;wr=nr;
    }
-   const mag=Math.hypot(re,im);
-   if(!mag)continue;
-   const midi=hzToMidi(h), pc=midiToPc(midi), frac=Math.abs(midi-Math.round(midi));
-   // favorece parciais próximos de notas reais e penaliza frequências muito altas.
-   const noteWeight=Math.max(0,1-frac*3), freqWeight=1/Math.sqrt(1+h/500);
-   chroma[pc]+=mag*noteWeight*freqWeight;
   }
-  const tonal=chroma.reduce((a,b)=>a+b,0);
-  if(!tonal)continue;
-  frameScores.push({chroma,score:tonal});
  }
- if(!frameScores.length)return {key:"—",confidence:0};
- // Usa somente os quadros mais tonais: isso reduz fala, batidas, ruído ambiente e silêncio.
- frameScores.sort((a,b)=>b.score-a.score);
- const keep=frameScores.slice(0,Math.max(8,Math.ceil(frameScores.length*.35)));
- for(const f of keep)for(let i=0;i<12;i++)sum[i]+=f.chroma[i]*(f.score/(keep[0].score||1));
- const totalEnergy=sum.reduce((a,b)=>a+b,0)||1;
- const candidates=[];
- for(let root=0;root<12;root++)for(const [mode,scale] of [["",MAJOR],["m",MINOR]]){
-  let inside=0,outside=0,tonic=0,dominant=0,third=0;
-  for(let i=0;i<12;i++){
-   const rel=(i-root+12)%12;
-   if(scale.includes(rel))inside+=sum[i]; else outside+=sum[i];
-   if(rel===0)tonic+=sum[i];
-   if(rel===7)dominant+=sum[i];
-   if(rel===(mode?3:4))third+=sum[i];
-  }
-  // Perfil ponderado: tônica + dominante + terça ajudam a diferenciar tons relativos.
-  const score=(inside-outside*.65)+tonic*.35+dominant*.18+third*.12;
-  candidates.push({key:NOTE_NAMES[root]+mode,score});
- }
- candidates.sort((a,b)=>b.score-a.score);
- const best=candidates[0], second=candidates[1]||best;
- const spread=Math.max(0,best.score-second.score)/(Math.abs(best.score)||1);
- const energy=Math.min(1, best.score/(totalEnergy||1));
- const confidence=Math.round(Math.max(35,Math.min(96,35+spread*180+energy*35)));
- return {key:best.key,confidence};
+ return {re,im};
 }
-
-function estimateBpm(samples,sr){
- const maxSeconds=Math.min(75,samples.length/sr),n=Math.floor(maxSeconds*sr),hop=1024;
- const env=[];for(let i=0;i+hop<n;i+=hop){let s=0;for(let j=0;j<hop;j+=4){const v=samples[i+j];s+=v*v}env.push(Math.sqrt(s/(hop/4)))}
- const onset=[];for(let i=1;i<env.length;i++)onset.push(Math.max(0,env[i]-env[i-1]));
- const minLag=Math.floor(60*sr/(180*hop)),maxLag=Math.ceil(60*sr/(60*hop));let best=-1,bestLag=0;
- for(let lag=minLag;lag<=maxLag;lag++){let score=0;for(let i=lag;i<onset.length;i++)score+=onset[i]*onset[i-lag];if(score>best){best=score;bestLag=lag}}
- if(!bestLag)return {bpm:null,confidence:0};let bpm=60*sr/(bestLag*hop);
- while(bpm<70)bpm*=2;while(bpm>180)bpm/=2;
- const confidence=Math.round(Math.min(99,Math.max(35,best/(onset.reduce((a,b)=>a+b*b,0)||1)*10000)));
- return {bpm:Math.round(bpm),confidence};
+function chromaFromFrame(frame,sr){
+ const n=frame.length,win=new Float64Array(n);
+ for(let i=0;i<n;i++)win[i]=frame[i]*(0.5-0.5*Math.cos(2*Math.PI*i/(n-1)));
+ const {re,im}=fftReal(win),ch=new Float64Array(12);
+ // Soma fundamental + harmônicos: isso evita que um único parcial domine o acorde.
+ for(let midi=36;midi<=84;midi++){
+  const hz=440*Math.pow(2,(midi-69)/12); if(hz<70||hz>1200)continue;
+  let energy=0;
+  for(let h=1;h<=5;h++){
+   const fhz=hz*h;if(fhz>Math.min(1800,sr/2-20))break;
+   const k=Math.max(1,Math.min((n>>1)-1,Math.round(fhz*n/sr)));
+   const mag=Math.hypot(re[k],im[k])/n;
+   energy+=mag/(h===1?1:h===2?1.7:h===3?2.5:h===4?3.2:4);
+  }
+  ch[midi%12]+=energy;
+ }
+ const total=ch.reduce((a,b)=>a+b,0)||1;
+ for(let i=0;i<12;i++)ch[i]/=total;
+ return ch;
+}
+const KEY_PROFILES={
+ major:[6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88],
+ minor:[6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17]
+};
+function profileCorrelation(a,b){
+ let ma=0,mb=0;for(let i=0;i<12;i++){ma+=a[i];mb+=b[i]}ma/=12;mb/=12;
+ let num=0,da=0,db=0;for(let i=0;i<12;i++){const x=a[i]-ma,y=b[i]-mb;num+=x*y;da+=x*x;db+=y*y}
+ return num/Math.sqrt((da||1)*(db||1));
+}
+function estimateKey(samples,sr){
+ const size=4096,step=2048,maxSec=Math.min(90,samples.length/sr),total=Math.floor(maxSec*sr);
+ const frames=[],hann=i=>0.5*(1-Math.cos(2*Math.PI*i/(size-1)));
+ for(let start=0;start+size<total;start+=step){
+  const frame=samples.subarray(start,start+size);let rms=0,zc=0,prev=frame[0]||0;
+  for(let i=0;i<size;i++){const v=frame[i]*hann(i);rms+=v*v;if(i&&((v>=0)!==(prev>=0)))zc++;prev=v}
+  rms=Math.sqrt(rms/size);if(rms<0.008||zc/size>0.28)continue;
+  const ch=chromaFromFrame(frame,sr),energy=ch.reduce((a,b)=>a+b,0);if(energy)frames.push({ch,energy:rms});
+ }
+ if(!frames.length)return {key:"—",confidence:0};
+ const sum=new Float64Array(12),weights=frames.map(x=>x.energy).sort((a,b)=>b-a),cut=weights[Math.max(0,Math.floor(weights.length*.55))];
+ let used=0;for(const f of frames){if(f.energy<cut)continue;used++;for(let i=0;i<12;i++)sum[i]+=f.ch[i]*f.energy}
+ const avg=Array.from(sum);let best=null,second=null;
+ for(let root=0;root<12;root++)for(const [mode,profile] of [["",KEY_PROFILES.major],["m",KEY_PROFILES.minor]]){
+  const score=profileCorrelation(avg,Array.from({length:12},(_,i)=>profile[(i-root+12)%12]));
+  const item={key:NOTE_NAMES[root]+mode,score};
+  if(!best||score>best.score){second=best;best=item}else if(!second||score>second.score)second=item;
+ }
+ const gap=Math.max(0,best.score-(second?.score||0));
+ return {key:best.key,confidence:Math.round(Math.max(45,Math.min(97,55+gap*180)))};
+}
+function chordTemplate(root,kind){
+ const x=new Float64Array(12);
+ const sets={
+  maj:[[0,1],[4,.82],[7,.72]],
+  min:[[0,1],[3,.82],[7,.72]],
+  7:[[0,1],[4,.78],[7,.68],[10,.58]],
+  maj7:[[0,1],[4,.78],[7,.68],[11,.55]],
+  min7:[[0,1],[3,.78],[7,.68],[10,.55]],
+  dim:[[0,1],[3,.78],[6,.68]]
+ };
+ for(const [i,w] of (sets[kind]||sets.maj))x[(root+i)%12]=w;
+ const s=x.reduce((a,b)=>a+b,0);for(let i=0;i<12;i++)x[i]/=s;return x;
 }
 function chordCandidates(key){
- const minorKey=key.endsWith("m"),root=NOTE_NAMES.indexOf(key.replace("m","")),scale=minorKey?MINOR:MAJOR,out=[];
- for(let i=0;i<7;i++){const pc=(root+scale[i])%12,isMinor=minorKey?[false,true,false,false,true,false,true][i]:[false,false,true,false,false,true,true][i];out.push({name:NOTE_NAMES[pc]+(isMinor?"m":""),root:pc,minor:isMinor});}
+ const root=NOTE_NAMES.indexOf(key.replace("m","")),minorKey=key.endsWith("m"),out=[];
+ const kinds=minorKey?["min","min7","7","maj","dim"]:["maj","min","7","maj7","min7","dim"];
+ for(let r=0;r<12;r++)for(const kind of kinds){
+  let suffix=kind==="min"?"m":kind==="7"?"7":kind==="maj7"?"maj7":kind==="min7"?"m7":kind==="dim"?"dim":"";
+  out.push({name:NOTE_NAMES[r]+suffix,root:r,kind,template:chordTemplate(r,kind),diatonic:false});
+ }
+ // Mantém a tonalidade como prior, mas não proíbe acordes fora dela.
+ const scale=minorKey?MINOR:MAJOR;
+ for(const x of out){const rel=(x.root-root+12)%12;if(scale.includes(rel))x.diatonic=true}
  return out;
 }
-function segmentChroma(frame,sr){
- const size=frame.length,chroma=new Float64Array(12);
- for(let pc=0;pc<12;pc++)for(let oct=2;oct<=5;oct++){const midi=12*oct+pc,hz=440*Math.pow(2,(midi-69)/12);if(hz<75||hz>1200)continue;const k=Math.max(1,Math.round(hz*size/sr)),w=2*Math.PI*k/size;let re=0,im=0;for(let n=0;n<size;n+=8){const v=frame[n]*(0.5-0.5*Math.cos(2*Math.PI*n/(size-1))),q=w*n;re+=v*Math.cos(q);im-=v*Math.sin(q)}chroma[pc]+=Math.hypot(re,im)/(1+hz/700)}
- const total=chroma.reduce((x,y)=>x+y,0)||1;for(let i=0;i<12;i++)chroma[i]/=total;return chroma;
-}
+function segmentChroma(frame,sr){return chromaFromFrame(frame,sr)}
 function scoreChord(chroma,c){
- const third=(c.root+(c.minor?3:4))%12,fifth=(c.root+7)%12;let s=chroma[c.root]*1.8+chroma[third]*1.15+chroma[fifth]*.9;for(let i=0;i<12;i++)if(i!==c.root&&i!==third&&i!==fifth)s-=chroma[i]*.18;return s;
+ let dot=0,n1=0,n2=0;for(let i=0;i<12;i++){dot+=chroma[i]*c.template[i];n1+=chroma[i]*chroma[i];n2+=c.template[i]*c.template[i]}
+ let score=dot/Math.sqrt((n1||1)*(n2||1));
+ if(c.diatonic)score+=.025;
+ return score;
 }
 function estimateChordProgression(samples,sr,key){
- const candidates=chordCandidates(key),seg=Math.max(4096,Math.min(8192,Math.round(sr*2.5))),segments=[];
- for(let start=0;start+Math.round(sr*1.2)<samples.length;start+=seg){const frame=samples.subarray(start,Math.min(samples.length,start+seg)),chroma=segmentChroma(frame,sr);let best=candidates[0],bs=-Infinity;for(const cc of candidates){const sc=scoreChord(chroma,cc);if(sc>bs){bs=sc;best=cc}}segments.push({start:start/sr,end:Math.min(samples.length,start+seg)/sr,chord:best.name,score:bs})}
- for(let i=1;i<segments.length-1;i++)if(segments[i-1].chord===segments[i+1].chord&&segments[i].score<segments[i-1].score*.94)segments[i].chord=segments[i-1].chord;
- const merged=[];for(const x of segments){const last=merged[merged.length-1];if(last&&last.chord===x.chord)last.end=x.end;else merged.push({...x})}return merged;
+ const candidates=chordCandidates(key),seg=Math.max(4096,Math.min(16384,Math.round(sr*2.0))),segments=[];
+ for(let start=0;start<samples.length;start+=seg){
+  const end=Math.min(samples.length,start+seg);if(end-start<Math.round(sr*.7))break;
+  const frame=samples.subarray(start,end),chroma=segmentChroma(frame,sr);
+  let best=candidates[0],bs=-Infinity;
+  for(const cc of candidates){const sc=scoreChord(chroma,cc);if(sc>bs){bs=sc;best=cc}}
+  segments.push({start:start/sr,end:end/sr,chord:best.name,score:bs});
+ }
+ // Suavização temporal: evita alternâncias espúrias entre acordes relativos.
+ for(let pass=0;pass<2;pass++)for(let i=1;i<segments.length-1;i++){
+  if(segments[i-1].chord===segments[i+1].chord && segments[i].chord!==segments[i-1].chord)segments[i].chord=segments[i-1].chord;
+ }
+ const merged=[];for(const x of segments){const last=merged[merged.length-1];if(last&&last.chord===x.chord){last.end=x.end;last.score=Math.max(last.score,x.score)}else merged.push({...x})}
+ return merged;
 }
 function diatonicChords(key){const minor=key.endsWith("m");const root=NOTE_NAMES.indexOf(key.replace("m",""));const intervals=minor?[0,2,3,5,7,8,10]:[0,2,4,5,7,9,11];const suffixes=minor?["m","dim","","m","m","",""]:["","m","m","","","m","dim"];return intervals.map((d,i)=>NOTE_NAMES[(root+d)%12]+suffixes[i]).slice(0,7);}
 async function analyzeVideoLive(video){
