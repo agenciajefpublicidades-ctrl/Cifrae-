@@ -93,7 +93,7 @@ main>h1,main>header+h1,main>header+h1+p{display:none}
 <div id="chords" class="chords"></div>
 <p class="notice">Os resultados são estimativas DSP feitas no dispositivo. A confiança indica a força do sinal analisado; não substitui uma transcrição musical profissional.</p>
 </section>
-<div class="footer">Cifraê V5 Real · processamento local · nenhum áudio é enviado por este protótipo.</div>
+<div class="footer">Cifraê Studio · processamento local · biblioteca de acordes Cifraê gerada no navegador.</div>
 
 <section id="realAudioPanel" class="panel" style="display:none">
 <h2>🎙️ Áudios reais dos instrumentos</h2>
@@ -189,6 +189,41 @@ function playRemoteSample(instrument,midi,t,d,gain){
  const peak=Math.max(.012,gain),end=t+Math.max(.06,d);g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(peak,t+.008);g.gain.exponentialRampToValueAtTime(.0001,end);
  src.connect(g);g.connect(bus);src.start(t);src.stop(end+.03);realSources.push(src);return true
 }
+// Biblioteca Cifraê de acordes: motor de cordas dedilhadas inspirado no gerador WAV fornecido pelo projeto.
+const cifraeChordBuffers=new Map();
+const CHORD_INSTRUMENTS=new Set(['Violão','Guitarra','Cavaquinho','Banjo']);
+function chordLibraryKey(instrument,notes){return instrument+'|'+notes.slice().sort((a,b)=>a-b).join(',')}
+function buildPluckedChordBuffer(instrument,notes){
+ if(!bandCtx||!notes?.length)return null;
+ const key=chordLibraryKey(instrument,notes),cached=cifraeChordBuffers.get(key);if(cached)return cached;
+ const duration=1.15,frames=Math.floor(bandCtx.sampleRate*duration),buffer=bandCtx.createBuffer(2,frames,bandCtx.sampleRate);
+ const profiles={'Violão':{brightness:.82,decay:2.1,noise:.62},'Guitarra':{brightness:1.02,decay:2.6,noise:.48},'Cavaquinho':{brightness:1.18,decay:1.25,noise:.58},'Banjo':{brightness:1.25,decay:1.05,noise:.72}};
+ const p=profiles[instrument]||profiles['Violão'];let seed=2166136261;for(const n of notes)seed=Math.imul(seed^n,16777619)>>>0;
+ const rnd=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return((seed>>>0)/4294967295)*2-1};
+ notes.slice().sort((a,b)=>a-b).forEach((midi,idx)=>{
+  const f=440*Math.pow(2,(midi-69)/12),delay=Math.max(2,Math.round(bandCtx.sampleRate/f)),ring=new Float32Array(delay);
+  for(let j=0;j<delay;j++)ring[j]=rnd()*(.65+.35*(1-j/delay));
+  const pan=notes.length===1?.5:.22+.56*(idx/(notes.length-1)),gain=.72/Math.sqrt(notes.length),L=buffer.getChannelData(0),R=buffer.getChannelData(1),start=Math.floor(idx*.012*bandCtx.sampleRate);let lp=0;
+  for(let i=start;i<frames;i++){const t=(i-start)/bandCtx.sampleRate,env=Math.exp(-t/p.decay)*Math.min(1,t/.008),pos=(i-start)%delay,cur=ring[pos],next=ring[(pos+1)%delay];ring[pos]=(cur+next)*.5*.996;lp=lp*.72+cur*.28;const sample=(cur*(1-p.noise)+lp*p.noise)*env*p.brightness*gain;L[i]+=sample*(1-pan);R[i]+=sample*pan;}
+ });
+ let peak=0;for(let ch=0;ch<2;ch++){const d=buffer.getChannelData(ch);for(let i=0;i<d.length;i++)peak=Math.max(peak,Math.abs(d[i]));}
+ if(peak>.98){const scale=.92/peak;for(let ch=0;ch<2;ch++){const d=buffer.getChannelData(ch);for(let i=0;i<d.length;i++)d[i]*=scale;}}
+ cifraeChordBuffers.set(key,buffer);return buffer;
+}
+function warmCifraeChordLibrary(){
+ if(!bandCtx||bandCtx.state==='closed')return;
+ const seen=new Set();
+ for(const seg of (window.cifraeProgression||[])){const notes=bandNotes(seg.chord),key=notes.join(',');if(seen.has(key))continue;seen.add(key);buildPluckedChordBuffer('Violão',notes);}
+}
+function playCifraeChord(instrument,notes,t,d,level){
+ if(!CHORD_INSTRUMENTS.has(instrument)||!bandCtx)return false;
+ const buffer=buildPluckedChordBuffer(instrument,notes);if(!buffer)return false;
+ const src=bandCtx.createBufferSource(),g=bandCtx.createGain(),bus=ensureBus(instrument);if(!bus)return false;
+ src.buffer=buffer;const end=t+Math.min(buffer.duration,Math.max(.18,d+.08));
+ g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(Math.max(.018,.34*level),t+.012);
+ g.gain.setTargetAtTime(Math.max(.0001,.22*level),t+.09,.16);g.gain.setTargetAtTime(.0001,Math.max(t+.18,end-.12),.09);
+ src.connect(g);g.connect(bus);src.start(t);src.stop(end+.04);realSources.push(src);return true;
+}
 function playRemoteChord(instrument,notes,t,d,level){
  let count=0;for(const midi of notes){if(playRemoteSample(instrument,midi,t,d,.16*level))count++}return count
 }
@@ -210,7 +245,7 @@ realFiles?.addEventListener('change',e=>loadRealInstrumentFiles(e.target.files))
 document.getElementById('generateBand').onclick=async()=>{
  const prog=window.cifraeProgression||[];if(!prog.length){s.textContent='Faça primeiro uma análise para gerar a banda.';return}
  try{
-  const media=await prepareBandAudio();if(bandTimer){clearTimeout(bandTimer);bandTimer=null}
+  const media=await prepareBandAudio();if(bandTimer){clearTimeout(bandTimer);bandTimer=null}\n  warmCifraeChordLibrary();
   if(media.paused)await media.play();
   stopRealSources();
   const startMediaTime=Math.max(0,Number(media.currentTime)||0);
@@ -231,7 +266,7 @@ document.getElementById('generateBand').onclick=async()=>{
     const t=base+(mediaT-startMediaTime);
     for(const card of [...l.children]){
      const controls=card.querySelector('.mixerBtns'),name=card.querySelector('b')?.textContent||'',on=controls.querySelector('[data-on]')?.textContent==='ON',muted=controls.querySelector('[data-mute]')?.classList.contains('active');const solos=[...l.querySelectorAll('[data-solo].active')],solo=controls.querySelector('[data-solo]')?.classList.contains('active');if(!on||muted||(solos.length&&!solo))continue;const level=Number(card.querySelector('input')?.value||75)/100,end=Math.min(seg.end,mediaT+beat*.92),dur=Math.max(.08,end-mediaT);
-     if(remoteSampleBanks.has(name)){playRemoteChord(name,ns,t,Math.min(.42,dur),level)}
+     if(CHORD_INSTRUMENTS.has(name)){playCifraeChord(name,ns,t,dur,level)}
      else if(name==='Contrabaixo'){playBandNote(ns[0]-12,t,Math.min(.7,dur),'sine',.28*level,'bass',name);if(mediaT+beat<seg.end)playBandNote(ns[0],t+beat*.5,.18,'triangle',.09*level,'bass',name)}
      else if(name==='Bateria'){bandKick(t,.28*level,name);bandHat(t+beat*.5,.075*level,name);bandHat(t+beat*.75,.055*level,name)}
      else if(name==='Percussão'){bandHat(t+beat*.25,.09*level,name);bandHat(t+beat*.75,.075*level,name)}
