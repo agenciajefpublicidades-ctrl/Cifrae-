@@ -126,16 +126,25 @@ function bandKick(t,gain,name){if(!bandCtx)return;const bus=ensureBus(name);cons
 function bandHat(t,gain,name){if(!bandCtx)return;const bus=ensureBus(name),n=bandCtx.createBufferSource(),g=bandCtx.createGain(),buf=bandCtx.createBuffer(1,Math.floor(bandCtx.sampleRate*.055),bandCtx.sampleRate),d=buf.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;n.buffer=buf;g.gain.setValueAtTime(Math.max(.002,gain),t);g.gain.exponentialRampToValueAtTime(.0001,t+.055);n.connect(g);g.connect(bus);n.start(t)}
 async function prepareBandAudio(){
  const media=currentMedia();if(!media?.src)throw new Error('Nenhum áudio carregado.');
- if(!bandCtx||bandCtx.state==='closed'){bandCtx=window.cifraeBandCtx&&window.cifraeBandCtx.state!=='closed'?window.cifraeBandCtx:new(window.AudioContext||window.webkitAudioContext)()}
- if(!bandMaster){bandMaster=bandCtx.createGain();bandMaster.gain.value=1.05;bandCompressor=bandCtx.createDynamicsCompressor();bandCompressor.threshold.value=-14;bandCompressor.knee.value=18;bandCompressor.ratio.value=4;bandCompressor.attack.value=.003;bandCompressor.release.value=.16;bandMaster.connect(bandCompressor);bandCompressor.connect(bandCtx.destination)}
- if(!bandSource){
-  bandSource=window.cifraeBandMediaSource||null;
-  if(!bandSource)bandSource=bandCtx.createMediaElementSource(media);
-  bandMediaGain=bandCtx.createGain();bandMediaGain.gain.value=.78;bandSource.connect(bandMediaGain);bandMediaGain.connect(bandMaster);
+ // O áudio original continua sendo reproduzido pelo elemento <audio>/<video>.
+ // A banda usa um contexto separado: isso evita que um MediaElementSource criado
+ // durante a análise do MOV deixe o elemento sem saída audível no iPhone/Safari.
+ if(!bandCtx||bandCtx.state==='closed')bandCtx=new(window.AudioContext||window.webkitAudioContext)();
+ if(!bandMaster){
+  bandMaster=bandCtx.createGain();
+  bandMaster.gain.value=1.0;
+  bandCompressor=bandCtx.createDynamicsCompressor();
+  bandCompressor.threshold.value=-14;
+  bandCompressor.knee.value=18;
+  bandCompressor.ratio.value=4;
+  bandCompressor.attack.value=.003;
+  bandCompressor.release.value=.16;
+  bandMaster.connect(bandCompressor);
+  bandCompressor.connect(bandCtx.destination);
  }
- if(window.cifraeBandMediaSource)window.cifraeBandMediaSource=bandSource;
  await bandCtx.resume();
- try{bandMaster.gain.cancelScheduledValues(bandCtx.currentTime);bandMaster.gain.setTargetAtTime(1.05,bandCtx.currentTime,.015)}catch(e){bandMaster.gain.value=1.05}
+ try{bandMaster.gain.cancelScheduledValues(bandCtx.currentTime);bandMaster.gain.setValueAtTime(1.0,bandCtx.currentTime)}catch(e){bandMaster.gain.value=1.0}
+ for(const [name,bus] of instrumentBuses){const card=[...l.children].find(x=>x.querySelector('b')?.textContent===name);const level=Number(card?.querySelector('input')?.value||75)/100;bus.gain.setValueAtTime(level,bandCtx.currentTime)}
  return media;
 }
 const realFiles=document.getElementById('realAudioFiles'),realList=document.getElementById('realAudioList'),realStatus=document.getElementById('realAudioStatus'),freeLibraryBtn=document.getElementById('loadFreeLibrary');
