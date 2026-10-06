@@ -485,28 +485,39 @@ function estimateChordProgression(samples,sr,key){
 function diatonicChords(key){const minor=key.endsWith("m");const root=NOTE_NAMES.indexOf(key.replace("m",""));const intervals=minor?[0,2,3,5,7,8,10]:[0,2,4,5,7,9,11];const suffixes=minor?["m","dim","","m","m","",""]:["","m","m","","","m","dim"];return intervals.map((d,i)=>NOTE_NAMES[(root+d)%12]+suffixes[i]).slice(0,7);}
 async function analyzeVideoLive(video){
  const ctx=new (window.AudioContext||window.webkitAudioContext)();
- let source=null,processor=null,output=null,collecting=true;
+ let probe=null,source=null,processor=null,output=null,collecting=true;
  const chunks=[];
  const duration=isFinite(video.duration)?video.duration:20;
  const limit=Math.min(duration,90);
  try{
   await ctx.resume();
-  // Captura o áudio REAL do elemento de vídeo. Isso permite analisar o MOV
-  // com o mesmo motor harmônico usado para MP3/WAV e mantém a saída audível.
-  source=ctx.createMediaElementSource(video);
+
+  // O vídeo original fica intocado para o áudio do usuário.
+  // Um clone invisível é usado somente para capturar amostras no WebAudio.
+  probe=document.createElement("video");
+  probe.src=video.currentSrc||video.src;
+  probe.preload="auto";
+  probe.playsInline=true;
+  probe.muted=false;
+  probe.volume=1;
+  probe.style.display="none";
+  document.body.appendChild(probe);
+  await new Promise((resolve,reject)=>{
+   if(probe.readyState>=2)resolve();
+   else{probe.onloadeddata=resolve;probe.onerror=()=>reject(new Error("Não foi possível carregar o áudio do MOV."));}
+  });
+
+  source=ctx.createMediaElementSource(probe);
   processor=ctx.createScriptProcessor(4096,2,1);
   output=ctx.createGain();
-  output.gain.value=1;
+  output.gain.value=0;
   source.connect(processor);
   processor.connect(output);
   output.connect(ctx.destination);
-  // Rota o áudio diretamente para a saída e mantém essa rota após a análise.
-  source.connect(ctx.destination);
 
   processor.onaudioprocess=e=>{
    if(!collecting)return;
-   const input=e.inputBuffer,n=input.length;
-   const mono=new Float32Array(n);
+   const input=e.inputBuffer,n=input.length,mono=new Float32Array(n);
    const ch0=input.getChannelData(0);
    if(input.numberOfChannels>1){
     const ch1=input.getChannelData(1);
@@ -515,32 +526,25 @@ async function analyzeVideoLive(video){
    chunks.push(mono);
   };
 
-  video.currentTime=0;
-  video.muted=false;
-  video.volume=1;
+  probe.currentTime=0;
+  try{await probe.play();}catch(e){throw new Error("O navegador bloqueou a leitura do áudio do MOV.");}
   const started=performance.now();
-  try{await video.play();}catch(e){throw new Error("O navegador bloqueou a reprodução do MOV.");}
-
-  while(video.currentTime<limit && performance.now()-started<95000){
-   bar.style.width=Math.min(95,28+(video.currentTime/Math.max(1,limit))*67)+"%";
+  while(probe.currentTime<limit && performance.now()-started<95000){
+   bar.style.width=Math.min(95,28+(probe.currentTime/Math.max(1,limit))*67)+"%";
    await new Promise(r=>setTimeout(r,80));
   }
 
-  video.pause();
+  probe.pause();
   collecting=false;
-
   const total=chunks.reduce((n,x)=>n+x.length,0);
   if(total<ctx.sampleRate*.7)throw new Error("Não consegui capturar áudio suficiente do MOV.");
 
-  const samples=new Float32Array(total);
-  let off=0;
+  const samples=new Float32Array(total);let off=0;
   for(const c of chunks){samples.set(c,off);off+=c.length}
 
-  // MOV -> amostras reais -> tonalidade -> progressão temporal de acordes.
   const key=estimateKey(samples,ctx.sampleRate);
   const progression=estimateChordProgression(samples,ctx.sampleRate,key.key);
   const chordNames=[...new Set(progression.map(x=>x.chord))];
-
   let bpmData=null;
   try{bpmData=estimateBpm(samples,ctx.sampleRate)}catch(e){console.warn("BPM MOV:",e)}
   const safeDuration=isFinite(video.duration)?video.duration:(samples.length/ctx.sampleRate);
@@ -551,24 +555,16 @@ async function analyzeVideoLive(video){
    return peak;
   });
 
-  return {
-   key:key.key,
-   keyConf:key.confidence||0,
-   bpm:bpmData?.bpm||null,
-   confidence:bpmData?.confidence||0,
-   chords:chordNames,
-   duration:safeDuration,
-   progression
-  };
+  return {key:key.key,keyConf:key.confidence||0,bpm:bpmData?.bpm||null,
+   confidence:bpmData?.confidence||0,chords:chordNames,duration:safeDuration,progression};
  }finally{
   collecting=false;
-  try{video.pause()}catch(e){}
+  try{probe&&probe.pause()}catch(e){}
   try{processor&&(processor.onaudioprocess=null)}catch(e){}
-  // Não fecha o contexto: o elemento continua com sua saída de áudio no Safari.
+  try{source&&source.disconnect()}catch(e){}
   try{processor&&processor.disconnect()}catch(e){}
-  // NÃO desconectar o source: o áudio do MOV continua passando pelo AudioContext.
-  window.cifraeAnalysisCtx=ctx;
-  window.cifraeAnalysisSource=source;
+  try{if(ctx.state!=="closed")await ctx.close()}catch(e){}
+  try{probe&&probe.remove()}catch(e){}
  }
 }
 btn.addEventListener("click",async()=>{
@@ -577,7 +573,7 @@ btn.addEventListener("click",async()=>{
   if(isVideoFile){
    status.textContent="MOV/vídeo detectado. Analisando o áudio pelo navegador...";bar.style.width="28%";
    const live=await analyzeVideoLive(videoPlayer); window.cifraeProgression=live.progression||[]; window.cifraeAudioDuration=live.duration||0; bar.style.width="100%";
-   $("key").textContent=live.key; $("keyConf").textContent=live.keyConf+"% confiança"; $("bpm").textContent=live.bpm||"—"; $("bpmConf").textContent=(live.confidence||0)+"% confiança"; $("duration").textContent=isFinite(live.duration)?Math.floor(live.duration/60)+":"+String(Math.floor(live.duration%60)).padStart(2,"0"):"—"; $("chords").innerHTML=live.chords.length?live.chords.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>'; result.style.display="block";window.showAccompaniment?.();syncStudioUI(); status.textContent="Análise do MOV concluída. Como o processamento é ao vivo, use os resultados como estimativa."; result.scrollIntoView({behavior:"smooth",block:"nearest"}); return;
+   $("key").textContent=live.key; $("keyConf").textContent=live.keyConf+"% confiança"; $("bpm").textContent=live.bpm||"—"; $("bpmConf").textContent=(live.confidence||0)+"% confiança"; $("duration").textContent=isFinite(live.duration)?Math.floor(live.duration/60)+":"+String(Math.floor(live.duration%60)).padStart(2,"0"):"—"; const field=diatonicChords(live.key); $("chords").innerHTML=field.length?field.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>'; result.style.display="block";window.showAccompaniment?.();syncStudioUI(); status.textContent="Análise do MOV concluída. Como o processamento é ao vivo, use os resultados como estimativa."; result.scrollIntoView({behavior:"smooth",block:"nearest"}); return;
   }
   const ctx=new (window.AudioContext||window.webkitAudioContext)();const raw=await f.arrayBuffer();bar.style.width="28%";const decoded=await ctx.decodeAudioData(raw);
   const src=decoded.getChannelData(0);let mono=src;
