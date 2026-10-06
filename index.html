@@ -92,7 +92,18 @@ main>h1,main>header+h1,main>header+h1+p{display:none}
 <input id="file" type="file" accept="audio/*,video/*,.mov,.mp3,.wav,.m4a,.mp4,.aac,.flac">
 <p id="fileName">Nenhum arquivo selecionado.</p>
 <audio id="player" controls preload="metadata" style="display:none"></audio><video id="videoPlayer" playsinline preload="metadata" muted style="display:none;width:100%;margin:18px 0 4px;border-radius:14px;background:#000"></video><audio id="movAudio" controls preload="metadata" style="display:none"></audio>
-<div class="actions"><button id="analyze" disabled>Analisar música</button><button class="secondary" id="clear" disabled>Limpar</button></div>
+<div class="actions"><button id="analyze" disabled>Analisar música</button><button class="secondary" id="clear" disabled>Limpar</button><button id="liveStart">🎙️ Cifraê AI Live</button></div>
+<section id="livePanel" class="panel" style="display:none;margin-top:14px">
+ <div class="proHeader"><strong>● Cifraê AI LIVE</strong><small id="liveStatus">Aguardando microfone</small></div>
+ <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px">
+  <div class="stat"><small>TOM AO VIVO</small><strong id="liveKey">—</strong><span id="liveKeyConf" class="conf">—</span></div>
+  <div class="stat"><small>ACORDE ATUAL</small><strong id="liveChord">—</strong><span id="liveChordConf" class="conf">—</span></div>
+  <div class="stat"><small>BPM AO VIVO</small><strong id="liveBpm">—</strong><span class="conf">estimativa</span></div>
+ </div>
+ <div id="liveHarmony" class="chords" style="margin-bottom:6px"></div>
+ <div class="notice">O Cifraê escuta o microfone em tempo real e atualiza tom, acorde e andamento. O processamento desta primeira versão acontece no próprio navegador.</div>
+ <button id="liveStop" class="secondary">Parar análise ao vivo</button>
+</section>
 <div class="progress"><div class="bar" id="bar"></div></div><p id="status" role="status">Selecione uma música para começar.</p>
 </section>
 <section id="result" class="panel">
@@ -725,4 +736,88 @@ $("studioForward").onclick=()=>{const m=currentMedia();m.playbackRate=Math.min(1
 [player,videoPlayer,movAudio].forEach(m=>m.addEventListener("timeupdate",()=>{if(!m.duration)return;$("playhead").style.left=(m.currentTime/m.duration*100)+"%";$("studioTime").textContent=fmtTime(m.currentTime)+"/"+fmtTime(m.duration);$("bottomCurrent").textContent=fmtTime(m.currentTime);$("bottomProgress").style.width=(m.currentTime/m.duration*100)+"%";document.querySelectorAll(".timelineChord").forEach(ch=>ch.classList.toggle("active",m.currentTime>=Number(ch.dataset.start)&&m.currentTime<Number(ch.dataset.end)));if(m.ended){$("studioPlay").textContent="▶";$("bottomPlay").textContent="▶"}}));
 $("openBand").onclick=()=>{$("acompanhamento").style.display="block";$("acompanhamento").scrollIntoView({behavior:"smooth",block:"center"})};
 window.addEventListener("resize",drawWave);drawWave();
+
+/* Cifraê AI LIVE ENGINE — análise contínua no navegador */
+let liveAudioCtx=null,liveStream=null,liveSource=null,liveAnalyser=null,liveRaf=0;
+let liveHistory=[],liveEnergy=[],liveOnsets=[],liveLastChord="—",liveStableCount=0;
+
+function liveKeyFromHistory(){
+ if(liveHistory.length<18)return {key:"—",confidence:0};
+ const avg=new Float64Array(12),n=liveHistory.length;
+ for(const h of liveHistory)for(let i=0;i<12;i++)avg[i]+=h[i];
+ for(let i=0;i<12;i++)avg[i]/=n;
+ const scores=[];
+ for(let root=0;root<12;root++)for(const mode of ["","m"])
+  scores.push({root,mode,score:keyScore(avg,root,mode)});
+ scores.sort((a,b)=>b.score-a.score);
+ const w=scores[0],s=scores[1]||{score:w.score-.01};
+ return {key:NOTE_NAMES[w.root]+w.mode,confidence:Math.round(Math.max(35,Math.min(98,50+(w.score-s.score)*180)))};
+}
+function livePickChord(chroma){
+ const candidates=chordCandidates(null);
+ const ranked=candidates.map(c=>({c,score:scoreChord(chroma,c)})).sort((a,b)=>b.score-a.score);
+ const best=ranked[0],second=ranked[1]||{score:best.score-.01};
+ return {name:best.c.name,score:best.score,confidence:Math.round(Math.max(30,Math.min(98,45+(best.score-second.score)*220)))};
+}
+function liveBpmEstimate(){
+ const now=performance.now(),recent=liveOnsets.filter(t=>now-t<12000);
+ if(recent.length<4)return null;
+ const intervals=[];for(let i=1;i<recent.length;i++){const d=recent[i]-recent[i-1];if(d>250&&d<1500)intervals.push(d)}
+ if(intervals.length<3)return null;
+ intervals.sort((a,b)=>a-b);const med=intervals[Math.floor(intervals.length/2)];
+ const bpm=60000/med;
+ if(bpm<55||bpm>210)return null;
+ return Math.round(bpm);
+}
+function liveLoop(){
+ if(!liveAnalyser)return;
+ const data=new Float32Array(liveAnalyser.fftSize);liveAnalyser.getFloatTimeDomainData(data);
+ let rms=0;for(const v of data)rms+=v*v;rms=Math.sqrt(rms/data.length);
+ if(rms>.008){
+  const chroma=chromaFromFrame(data,liveAudioCtx.sampleRate);
+  liveHistory.push(chroma);if(liveHistory.length>120)liveHistory.shift();
+  const picked=livePickChord(chroma);
+  if(picked.name===liveLastChord)liveStableCount++;else{liveLastChord=picked.name;liveStableCount=1}
+  if(liveStableCount>=3){
+   $("liveChord").textContent=picked.name;
+   $("liveChordConf").textContent=picked.confidence+"% confiança";
+   const k=liveKeyFromHistory();
+   if(k.key!=="—"){$("liveKey").textContent=k.key;$("liveKeyConf").textContent=k.confidence+"% confiança"}
+   const bpm=liveBpmEstimate();if(bpm)$("liveBpm").textContent=bpm;
+   const seq=[...new Set(liveHistory.slice(-24).map(h=>livePickChord(h).name))];
+   $("liveHarmony").innerHTML=seq.slice(-8).map(x=>'<span class="chord">'+x+'</span>').join("");
+  }
+  const now=performance.now();
+  const prev=liveEnergy[liveEnergy.length-1]?.v||0;
+  if(rms>Math.max(.012,prev*1.35))liveOnsets.push(now);
+  liveEnergy.push({t:now,v:rms});if(liveEnergy.length>180)liveEnergy.shift();
+  liveOnsets=liveOnsets.filter(t=>now-t<12000);
+ }
+ liveRaf=requestAnimationFrame(liveLoop);
+}
+async function startCifraeLive(){
+ if(!navigator.mediaDevices?.getUserMedia){$("liveStatus").textContent="Microfone não disponível neste navegador.";return}
+ try{
+  $("liveStart").disabled=true;$("livePanel").style.display="block";$("liveStatus").textContent="Solicitando acesso ao microfone…";
+  liveStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+  liveAudioCtx=new (window.AudioContext||window.webkitAudioContext)();await liveAudioCtx.resume();
+  liveSource=liveAudioCtx.createMediaStreamSource(liveStream);
+  liveAnalyser=liveAudioCtx.createAnalyser();liveAnalyser.fftSize=4096;liveAnalyser.smoothingTimeConstant=.15;
+  liveSource.connect(liveAnalyser);liveHistory=[];liveEnergy=[];liveOnsets=[];liveLastChord="—";liveStableCount=0;
+  $("liveStatus").textContent="Ouvindo ao vivo…";
+  liveRaf=requestAnimationFrame(liveLoop);
+ }catch(e){
+  $("liveStatus").textContent="Não foi possível acessar o microfone.";
+  $("liveStart").disabled=false;
+ }
+}
+function stopCifraeLive(){
+ cancelAnimationFrame(liveRaf);liveRaf=0;
+ if(liveStream)liveStream.getTracks().forEach(t=>t.stop());
+ if(liveAudioCtx&&liveAudioCtx.state!=="closed")liveAudioCtx.close();
+ liveStream=null;liveAudioCtx=null;liveSource=null;liveAnalyser=null;
+ $("liveStatus").textContent="Análise ao vivo parada.";$("liveStart").disabled=false;
+}
+$("liveStart").addEventListener("click",startCifraeLive);
+$("liveStop").addEventListener("click",stopCifraeLive);
 </script></body></html>
