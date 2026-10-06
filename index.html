@@ -528,7 +528,7 @@ function estimateChordProgression(samples,sr,key){
   const best=ranked[0],second=ranked[1]||{score:best.score-.01};
   raw.push({
    start:start/sr,end:end/sr,chord:best.cc.name,
-   score:best.score,margin:best.score-second.score
+   score:best.score,margin:best.score-second.score,chroma
   });
  }
  if(!raw.length)return [];
@@ -541,9 +541,8 @@ function estimateChordProgression(samples,sr,key){
  const scoreAt=(i,name)=>{const x=raw[i],cc=byName.get(name);if(!cc)return -99;return scoreChord(segmentChroma(samples.subarray(Math.floor(x.start*sr),Math.min(samples.length,Math.floor(x.end*sr))),sr),cc)};
  // Para não recalcular centenas de FFTs, usa apenas os candidatos fortes de cada janela.
  const options=raw.map(x=>{
-  const local=candidates.map(cc=>({name:cc.name,score:scoreChord(segmentChroma(samples.subarray(Math.floor(x.start*sr),Math.min(samples.length,Math.floor(x.end*sr))),sr),cc)}))
-   .sort((u,v)=>v.score-u.score).slice(0,8);
-  return local;
+  return candidates.map(cc=>({name:cc.name,score:scoreChord(x.chroma,cc)})
+   ).sort((u,v)=>v.score-u.score).slice(0,8);
  });
  for(let i=0;i<raw.length;i++){
   for(const opt of options[i]){
