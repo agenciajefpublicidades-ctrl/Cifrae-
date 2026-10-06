@@ -478,19 +478,23 @@ function chordTemplate(root,kind){
   7:[[0,1],[4,.78],[7,.68],[10,.58]],
   maj7:[[0,1],[4,.78],[7,.68],[11,.55]],
   min7:[[0,1],[3,.78],[7,.68],[10,.55]],
+  9:[[0,1],[4,.80],[7,.70],[10,.48],[2,.38]],
+  maj9:[[0,1],[4,.80],[7,.70],[11,.52],[2,.38]],
+  min9:[[0,1],[3,.80],[7,.70],[10,.52],[2,.36]],
   dim:[[0,1],[3,.78],[6,.68]]
  };
  for(const [i,w] of (sets[kind]||sets.maj))x[(root+i)%12]=w;
- const s=x.reduce((a,b)=>a+b,0);for(let i=0;i<12;i++)x[i]/=s;return x;
+ const s=x.reduce((aa,v)=>aa+v,0);for(let i=0;i<12;i++)x[i]/=s;
+ return x;
 }
 function chordCandidates(key){
  const hasKey=typeof key==="string"&&key!=="—";
  const minorKey=hasKey&&key.endsWith("m");
  const root=hasKey?NOTE_NAMES.indexOf(key.replace("m","")):-1;
  const out=[];
- const kinds=minorKey?["min","min7","7","maj","dim"]:["maj","min","7","maj7","min7","dim"];
+ const kinds=minorKey?["min","min7","min9","7","maj","maj7","9","dim"]:["maj","maj7","9","7","min","min7","min9","dim"];
  for(let r=0;r<12;r++)for(const kind of kinds){
-  let suffix=kind==="min"?"m":kind==="7"?"7":kind==="maj7"?"maj7":kind==="min7"?"m7":kind==="dim"?"dim":"";
+  let suffix=kind==="min"?"m":kind==="7"?"7":kind==="maj7"?"maj7":kind==="min7"?"m7":kind==="9"?"9":kind==="maj9"?"maj9":kind==="min9"?"m9":kind==="dim"?"dim":"";
   out.push({name:NOTE_NAMES[r]+suffix,root:r,kind,template:chordTemplate(r,kind),diatonic:false});
  }
  if(hasKey){
@@ -509,24 +513,68 @@ function scoreChord(chroma,c){
 function estimateChordProgression(samples,sr,key){
  const candidates=chordCandidates(key);
  let bpm=null;try{bpm=estimateBpm(samples,sr)?.bpm||null}catch(e){}
- const secPerBar=bpm>55&&bpm<210?240/bpm:1.6;
- const seg=Math.max(Math.round(sr*.9),Math.min(Math.round(sr*3.2),Math.round(sr*secPerBar))),segments=[];
- for(let start=0;start<samples.length;start+=seg){
-  const end=Math.min(samples.length,start+seg);if(end-start<Math.round(sr*.65))break;
-  const chroma=segmentChroma(samples.subarray(start,end),sr);
-  const ranked=candidates.map(cc=>({cc,score:scoreChord(chroma,cc)})).sort((a,b)=>b.score-a.score);
+ // A progressão é analisada em unidades de batida. O algoritmo anterior
+ // usava até um compasso inteiro por bloco e podia perder mudanças de acorde.
+ const beatSec=bpm>55&&bpm<210?60/bpm:0.8;
+ const hop=Math.max(.42,Math.min(1.25,beatSec));
+ const win=Math.max(.85,Math.min(2.2,beatSec*2.0));
+ const hopN=Math.max(1,Math.round(sr*hop)),winN=Math.max(hopN,Math.round(sr*win));
+ const raw=[];
+ for(let start=0;start<samples.length;start+=hopN){
+  const end=Math.min(samples.length,start+winN);
+  if(end-start<Math.round(sr*.45))break;
+  const frame=samples.subarray(start,end),chroma=segmentChroma(frame,sr);
+  const ranked=candidates.map(cc=>({cc,score:scoreChord(chroma,cc)})).sort((x,y)=>y.score-x.score);
   const best=ranked[0],second=ranked[1]||{score:best.score-.01};
-  segments.push({start:start/sr,end:end/sr,chord:best.cc.name,score:best.score,margin:best.score-second.score});
+  raw.push({
+   start:start/sr,end:end/sr,chord:best.cc.name,
+   score:best.score,margin:best.score-second.score
+  });
  }
- for(let pass=0;pass<3;pass++)for(let i=1;i<segments.length-1;i++){
-  const a=segments[i-1],x=segments[i],b=segments[i+1];
-  if(a.chord===b.chord&&x.chord!==a.chord&&x.margin<.055)x.chord=a.chord;
+ if(!raw.length)return [];
+
+ // Viterbi simples: privilegia uma sequência musical estável e penaliza
+ // trocas de acorde muito rápidas sem evidência forte.
+ const dp=raw.map(()=>new Map()),prev=raw.map(()=>new Map());
+ const names=[...new Set(raw.flatMap(x=>candidates.map(c=>c.name)))];
+ const byName=new Map(candidates.map(c=>[c.name,c]));
+ const scoreAt=(i,name)=>{const x=raw[i],cc=byName.get(name);if(!cc)return -99;return scoreChord(segmentChroma(samples.subarray(Math.floor(x.start*sr),Math.min(samples.length,Math.floor(x.end*sr))),sr),cc)};
+ // Para não recalcular centenas de FFTs, usa apenas os candidatos fortes de cada janela.
+ const options=raw.map(x=>{
+  const local=candidates.map(cc=>({name:cc.name,score:scoreChord(segmentChroma(samples.subarray(Math.floor(x.start*sr),Math.min(samples.length,Math.floor(x.end*sr))),sr),cc)}))
+   .sort((u,v)=>v.score-u.score).slice(0,8);
+  return local;
+ });
+ for(let i=0;i<raw.length;i++){
+  for(const opt of options[i]){
+   if(i===0){dp[i].set(opt.name,opt.score);continue}
+   let best=-Infinity,bestPrev=null;
+   for(const [pn,pv] of dp[i-1]){
+    const change=pn===opt.name?0:1;
+    const sameBonus=pn===opt.name?.055:0;
+    const transitionPenalty=change*(opt.score<.43?.075:.035);
+    const v=pv+opt.score+sameBonus-transitionPenalty;
+    if(v>best){best=v;bestPrev=pn}
+   }
+   dp[i].set(opt.name,best);prev[i].set(opt.name,bestPrev);
+  }
+ }
+ let last=[...dp[dp.length-1]].sort((x,y)=>y[1]-x[1])[0]?.[0];
+ const path=new Array(raw.length);
+ for(let i=raw.length-1;i>=0;i--){path[i]=last;last=prev[i].get(last)}
+ const traced=raw.map((x,i)=>({...x,chord:path[i]}));
+
+ // Remove trocas isoladas e mudanças com margem muito pequena.
+ for(let pass=0;pass<3;pass++)for(let i=1;i<traced.length-1;i++){
+  if(traced[i-1].chord===traced[i+1].chord&&traced[i].chord!==traced[i-1].chord&&traced[i].margin<.07)
+   traced[i].chord=traced[i-1].chord;
  }
  const merged=[];
- for(const x of segments){
+ for(const x of traced){
   const last=merged[merged.length-1];
-  if(last&&last.chord===x.chord){last.end=x.end;last.score=Math.max(last.score,x.score)}
-  else merged.push({...x});
+  if(last&&last.chord===x.chord){
+   last.end=x.end;last.score=Math.max(last.score,x.score);last.margin=Math.max(last.margin,x.margin);
+  }else merged.push({...x});
  }
  return merged;
 }
