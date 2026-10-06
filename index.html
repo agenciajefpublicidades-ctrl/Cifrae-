@@ -89,8 +89,11 @@ main>h1,main>header+h1,main>header+h1+p{display:none}
 <div class="stat"><small>BPM estimado</small><strong id="bpm">—</strong><span id="bpmConf" class="conf">—</span></div>
 <div class="stat"><small>Duração</small><strong id="duration">—</strong><span class="conf">arquivo</span></div>
 </div>
-<h2 style="margin-top:25px">Progressão provável</h2>
+<h2 style="margin-top:25px">Campo harmônico</h2>
+<div id="fieldChords" class="chords"></div>
+<h2 style="margin-top:25px">Progressão detectada</h2>
 <div id="chords" class="chords"></div>
+<p class="notice">O campo harmônico mostra os acordes disponíveis na tonalidade. A progressão detectada mostra a ordem em que o algoritmo encontrou mudanças no áudio.</p>
 <p class="notice">Os resultados são estimativas DSP feitas no dispositivo. A confiança indica a força do sinal analisado; não substitui uma transcrição musical profissional.</p>
 </section>
 <div class="footer">Cifraê Studio · processamento local · biblioteca de acordes Cifraê gerada no navegador.</div>
@@ -360,27 +363,22 @@ function chromaFromFrame(frame,sr){
  const n=frame.length,win=new Float64Array(n);
  for(let i=0;i<n;i++)win[i]=frame[i]*(0.5-0.5*Math.cos(2*Math.PI*i/(n-1)));
  const {re,im}=fftReal(win),ch=new Float64Array(12);
- // Chroma espectral: cada parcial é atribuído à sua classe de altura.
- // O objetivo aqui é medir a distribuição de notas do áudio, não montar acordes.
+ // Harmonic summation: reforça a fundamental e reduz o peso de harmônicos agudos.
  for(let k=2;k<(n>>1);k++){
-  const hz=k*sr/n;
-  if(hz<55||hz>2200)continue;
-  const mag=Math.hypot(re[k],im[k])/n;
-  if(mag<0.00015)continue;
+  const hz=k*sr/n;if(hz<65||hz>1400)continue;
+  const mag=Math.hypot(re[k],im[k])/n;if(mag<0.00012)continue;
   const midi=69+12*Math.log2(hz/440);
   const pc=((Math.round(midi)%12)+12)%12;
-  const freqWeight=1/Math.sqrt(Math.max(1,hz/110));
-  ch[pc]+=mag*freqWeight;
+  ch[pc]+=mag/Math.sqrt(Math.max(1,hz/110));
  }
- const total=ch.reduce((a,b)=>a+b,0)||1;
- for(let i=0;i<12;i++)ch[i]/=total;
- return ch;
+ const sm=new Float64Array(12);
+ for(let i=0;i<12;i++)sm[i]=ch[i]*.62+ch[(i+11)%12]*.19+ch[(i+1)%12]*.19;
+ const total=sm.reduce((a,v)=>a+v,0)||1;for(let i=0;i<12;i++)sm[i]/=total;
+ return sm;
 }
-
 const KEY_PROFILES={
  major:[6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88],
  minor:[6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17],
- // Segundo perfil independente para reduzir dependência de um único modelo.
  major2:[0.748,0.060,0.488,0.082,0.670,0.460,0.096,0.715,0.104,0.130,0.094,0.081],
  minor2:[0.712,0.084,0.474,0.618,0.049,0.460,0.105,0.747,0.176,0.062,0.052,0.192]
 };
@@ -389,69 +387,37 @@ function profileCorrelation(a,b){
  let num=0,da=0,db=0;for(let i=0;i<12;i++){const x=a[i]-ma,y=b[i]-mb;num+=x*y;da+=x*x;db+=y*y}
  return num/Math.sqrt((da||1)*(db||1));
 }
-function rotateProfile(profile,root){
- return Array.from({length:12},(_,i)=>profile[(i-root+12)%12]);
-}
+function rotateProfile(profile,root){return Array.from({length:12},(_,i)=>profile[(i-root+12)%12])}
 function keyScore(chroma,root,mode){
- const p1=KEY_PROFILES[mode==="m"?"minor":"major"];
- const p2=KEY_PROFILES[mode==="m"?"minor2":"major2"];
- return .62*profileCorrelation(chroma,rotateProfile(p1,root))+
-        .38*profileCorrelation(chroma,rotateProfile(p2,root));
+ const p1=KEY_PROFILES[mode==="m"?"minor":"major"],p2=KEY_PROFILES[mode==="m"?"minor2":"major2"];
+ let score=.62*profileCorrelation(chroma,rotateProfile(p1,root))+.38*profileCorrelation(chroma,rotateProfile(p2,root));
+ // Evidência complementar pelo círculo de quintas, com peso pequeno.
+ const fifths=[0,7,2,9,4,11,6,1,8,3,10,5];let fifth=0,total=0;
+ for(let i=0;i<12;i++){const d=Math.min(i,12-i),w=Math.max(0,1-d/6),v=chroma[(root+fifths[i])%12];fifth+=v*w;total+=v}
+ return score+.08*(fifth/(total||1));
 }
 function estimateKey(samples,sr){
- const size=4096,step=2048,maxSec=Math.min(90,samples.length/sr),total=Math.floor(maxSec*sr);
- const windows=[];
+ const size=4096,step=2048,maxSec=Math.min(90,samples.length/sr),total=Math.floor(maxSec*sr),windows=[];
  for(let start=0;start+size<=total;start+=step){
-  const frame=samples.subarray(start,start+size);
-  let rms=0,peak=0;for(let i=0;i<size;i++){const v=frame[i];rms+=v*v;peak=Math.max(peak,Math.abs(v))}
-  rms=Math.sqrt(rms/size);
-  if(rms<0.008||peak<0.035)continue;
-  const ch=chromaFromFrame(frame,sr);
-  let best=null,second=null;
-  for(let root=0;root<12;root++)for(const mode of ["","m"]){
-   const score=keyScore(ch,root,mode);
-   const item={root,mode,score};
-   if(!best||score>best.score){second=best;best=item}
-   else if(!second||score>second.score)second=item;
-  }
-  const gap=Math.max(0,best.score-(second?.score||0));
-  windows.push({ch,rms,best,gap});
+  const frame=samples.subarray(start,start+size);let rms=0,peak=0;
+  for(let i=0;i<size;i++){const v=frame[i];rms+=v*v;peak=Math.max(peak,Math.abs(v))}
+  rms=Math.sqrt(rms/size);if(rms<0.006||peak<0.025)continue;
+  const ch=chromaFromFrame(frame,sr),scores=[];
+  for(let root=0;root<12;root++)for(const mode of ["","m"])scores.push({root,mode,score:keyScore(ch,root,mode)});
+  scores.sort((x,y)=>y.score-x.score);windows.push({ch,rms,best:scores[0],gap:scores[0].score-scores[1].score});
  }
  if(!windows.length)return {key:"—",confidence:0};
-
- // Votação por janelas: uma passagem de 90s não pode ser decidida por um
- // único acorde forte ou por ruído de tela.
  const votes=Array.from({length:24},()=>0);
- for(const w of windows){
-  const weight=w.rms*Math.max(.25,.5+w.gap*3);
-  votes[w.best.root*2+(w.best.mode==="m"?1:0)]+=weight;
- }
+ for(const w of windows){const wt=Math.pow(w.rms,.72)*Math.max(.35,.7+w.gap*4);votes[w.best.root*2+(w.best.mode==="m"?1:0)]+=wt}
  const ranked=votes.map((v,i)=>({v,root:Math.floor(i/2),mode:i%2?"m":""})).sort((a,b)=>b.v-a.v);
- const winner=ranked[0],runner=ranked[1]||{v:0};
- const key=NOTE_NAMES[winner.root]+winner.mode;
-
- // Também usa a cromática média como desempate global.
- const avg=new Float64Array(12);let weightSum=0;
- for(const w of windows){
-  const wt=w.rms;
-  weightSum+=wt;
-  for(let i=0;i<12;i++)avg[i]+=w.ch[i]*wt;
- }
- for(let i=0;i<12;i++)avg[i]/=(weightSum||1);
- const globalScores=[];
- for(let root=0;root<12;root++)for(const mode of ["","m"])
-  globalScores.push({root,mode,score:keyScore(avg,root,mode)});
- globalScores.sort((x,y)=>y.score-x.score);
- const global=globalScores[0];
-
- // Se a votação e a análise global concordarem, aumentamos a confiança.
- // Se divergirem, preferimos a votação temporal, mas sinalizamos a incerteza.
- const agree=global.root===winner.root&&global.mode===winner.mode;
- const voteGap=winner.v/(runner.v||winner.v)-1;
- const profileGap=global.score-(globalScores[1]?.score||0);
- let confidence=48+voteGap*110+profileGap*120+(agree?12:-6);
- confidence=Math.round(Math.max(35,Math.min(98,confidence)));
-
+ const winner=ranked[0],avg=new Float64Array(12);let sum=0;
+ for(const w of windows){const wt=Math.pow(w.rms,.72);sum+=wt;for(let i=0;i<12;i++)avg[i]+=w.ch[i]*wt}
+ for(let i=0;i<12;i++)avg[i]/=(sum||1);
+ const global=[];for(let root=0;root<12;root++)for(const mode of ["","m"])global.push({root,mode,score:keyScore(avg,root,mode)});
+ global.sort((x,y)=>y.score-x.score);
+ const combined=global.map(g=>({...g,score:g.score+.16*(votes[g.root*2+(g.mode==="m"?1:0)]/(winner.v||1))})).sort((a,b)=>b.score-a.score);
+ const best=combined[0],second=combined[1]||{score:best.score-.01},key=NOTE_NAMES[best.root]+best.mode;
+ const confidence=Math.round(Math.max(40,Math.min(97,50+(best.score-second.score)*90+(winner.root===best.root&&winner.mode===best.mode?10:0))));
  return {key,confidence};
 }
 function chordTemplate(root,kind){
@@ -487,17 +453,19 @@ function scoreChord(chroma,c){
  return score;
 }
 function estimateChordProgression(samples,sr,key){
- const candidates=chordCandidates(key),seg=Math.max(4096,Math.min(16384,Math.round(sr*2.0))),segments=[];
+ const candidates=chordCandidates(key);let bpm=null;try{bpm=estimateBpm(samples,sr)?.bpm||null}catch(e){}
+ const secPerBar=bpm>55&&bpm<210?240/bpm:1.6;
+ const seg=Math.max(Math.round(sr*.9),Math.min(Math.round(sr*3.2),Math.round(sr*secPerBar))),segments=[];
  for(let start=0;start<samples.length;start+=seg){
-  const end=Math.min(samples.length,start+seg);if(end-start<Math.round(sr*.7))break;
-  const frame=samples.subarray(start,end),chroma=segmentChroma(frame,sr);
-  let best=candidates[0],bs=-Infinity;
-  for(const cc of candidates){const sc=scoreChord(chroma,cc);if(sc>bs){bs=sc;best=cc}}
-  segments.push({start:start/sr,end:end/sr,chord:best.name,score:bs});
+  const end=Math.min(samples.length,start+seg);if(end-start<Math.round(sr*.65))break;
+  const chroma=segmentChroma(samples.subarray(start,end),sr);
+  const ranked=candidates.map(cc=>({cc,score:scoreChord(chroma,cc)})).sort((a,b)=>b.score-a.score);
+  const best=ranked[0],second=ranked[1]||{score:best.score-.01};
+  segments.push({start:start/sr,end:end/sr,chord:best.cc.name,score:best.score,margin:best.score-second.score});
  }
- // Suavização temporal: evita alternâncias espúrias entre acordes relativos.
- for(let pass=0;pass<2;pass++)for(let i=1;i<segments.length-1;i++){
-  if(segments[i-1].chord===segments[i+1].chord && segments[i].chord!==segments[i-1].chord)segments[i].chord=segments[i-1].chord;
+ for(let pass=0;pass<3;pass++)for(let i=1;i<segments.length-1;i++){
+  const a=segments[i-1],x=segments[i],b=segments[i+1];
+  if(a.chord===b.chord&&x.chord!==a.chord&&x.margin<.055)x.chord=a.chord;
  }
  const merged=[];for(const x of segments){const last=merged[merged.length-1];if(last&&last.chord===x.chord){last.end=x.end;last.score=Math.max(last.score,x.score)}else merged.push({...x})}
  return merged;
