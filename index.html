@@ -78,7 +78,7 @@ main>h1,main>header+h1,main>header+h1+p{display:none}
 <label class="upload" for="file">🎵<strong>Escolher áudio ou vídeo</strong><small>MP3, WAV, M4A, MP4 e outros formatos compatíveis com o navegador</small></label>
 <input id="file" type="file" accept="audio/*,video/*,.mov,.mp3,.wav,.m4a,.mp4,.aac,.flac">
 <p id="fileName">Nenhum arquivo selecionado.</p>
-<audio id="player" controls preload="metadata" style="display:none"></audio><video id="videoPlayer" controls playsinline preload="metadata" style="display:none;width:100%;margin:18px 0 4px;border-radius:14px;background:#000"></video>
+<audio id="player" controls preload="metadata" style="display:none"></audio><video id="videoPlayer" playsinline preload="metadata" muted style="display:none;width:100%;margin:18px 0 4px;border-radius:14px;background:#000"></video><audio id="movAudio" controls preload="metadata" style="display:none"></audio>
 <div class="actions"><button id="analyze" disabled>Analisar música</button><button class="secondary" id="clear" disabled>Limpar</button></div>
 <div class="progress"><div class="bar" id="bar"></div></div><p id="status" role="status">Selecione uma música para começar.</p>
 </section>
@@ -304,11 +304,31 @@ const MAJOR=[0,2,4,5,7,9,11], MINOR=[0,2,3,5,7,8,10];
 file.addEventListener("change",()=>{
  const f=file.files?.[0]; result.style.display="none"; bar.style.width="0%";
  if(objectUrl)URL.revokeObjectURL(objectUrl);
- if(!f){player.style.display="none";btn.disabled=true;clear.disabled=true;status.textContent="Selecione uma música para começar.";return}
- objectUrl=URL.createObjectURL(f); isVideoFile=/\.(mov|mp4|m4v|webm|ogv)$/i.test(f.name) || f.type.startsWith("video/"); if(isVideoFile){player.style.display="none";videoPlayer.src=objectUrl;videoPlayer.style.display="block";}else{videoPlayer.style.display="none";player.src=objectUrl;player.style.display="block";} btn.disabled=false;clear.disabled=false;
- $("fileName").textContent=f.name+" · "+(f.size/1048576).toFixed(1)+" MB";status.textContent="Arquivo carregado. Reproduza ou inicie a análise.";syncStudioFile(f);
+ if(!f){player.style.display="none";movAudio.style.display="none";btn.disabled=true;clear.disabled=true;status.textContent="Selecione uma música para começar.";return}
+ objectUrl=URL.createObjectURL(f);
+ isVideoFile=/\.(mov|mp4|m4v|webm|ogv)$/i.test(f.name) || f.type.startsWith("video/");
+ if(isVideoFile){
+  player.pause();player.removeAttribute("src");player.style.display="none";
+  videoPlayer.pause();videoPlayer.src=objectUrl;videoPlayer.currentTime=0;videoPlayer.muted=true;videoPlayer.controls=false;videoPlayer.style.display="block";
+  movAudio.pause();movAudio.src=objectUrl;movAudio.currentTime=0;movAudio.volume=1;movAudio.muted=false;movAudio.style.display="block";
+ }else{
+  movAudio.pause();movAudio.removeAttribute("src");movAudio.style.display="none";
+  videoPlayer.style.display="none";videoPlayer.pause();videoPlayer.removeAttribute("src");
+  player.src=objectUrl;player.style.display="block";
+ }
+ btn.disabled=false;clear.disabled=false;
+ $("fileName").textContent=f.name+" · "+(f.size/1048576).toFixed(1)+" MB";
+ status.textContent=isVideoFile?"MOV carregado. Use o player de áudio abaixo do vídeo.":"Arquivo carregado. Reproduza ou inicie a análise.";
+ syncStudioFile(f);
 });
-clear.addEventListener("click",()=>{if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=null;file.value="";player.pause();player.removeAttribute("src");player.load();player.style.display="none";videoPlayer.pause();videoPlayer.removeAttribute("src");videoPlayer.load();videoPlayer.style.display="none";btn.disabled=true;clear.disabled=true;result.style.display="none";bar.style.width="0%";$("fileName").textContent="Nenhum arquivo selecionado.";status.textContent="Selecione uma música para começar.";});
+clear.addEventListener("click",()=>{
+ if(objectUrl)URL.revokeObjectURL(objectUrl);objectUrl=null;file.value="";
+ player.pause();player.removeAttribute("src");player.load();player.style.display="none";
+ movAudio.pause();movAudio.removeAttribute("src");movAudio.load();movAudio.style.display="none";
+ videoPlayer.pause();videoPlayer.removeAttribute("src");videoPlayer.load();videoPlayer.style.display="none";
+ btn.disabled=true;clear.disabled=true;result.style.display="none";bar.style.width="0%";
+ $("fileName").textContent="Nenhum arquivo selecionado.";status.textContent="Selecione uma música para começar.";
+});
 function hzToMidi(h){return 69+12*Math.log2(h/440)}
 function midiToPc(m){return ((Math.round(m)%12)+12)%12}
 function analyzeSpectrum(data,sr){
@@ -594,7 +614,16 @@ function syncStudioFile(f){window.cifraeWavePeaks=[];$("studioSong").textContent
 function drawWave(){const cv=$("waveCanvas"),ctx=cv.getContext("2d");const w=cv.clientWidth*devicePixelRatio,h=cv.clientHeight*devicePixelRatio;cv.width=w;cv.height=h;ctx.clearRect(0,0,w,h);const peaks=window.cifraeWavePeaks||[];ctx.strokeStyle="rgba(122,239,155,.72)";ctx.lineWidth=Math.max(1,devicePixelRatio);ctx.beginPath();if(peaks.length){for(let x=0;x<w;x+=2){const i=Math.min(peaks.length-1,Math.floor(x/w*peaks.length));const a=Math.max(.03,Math.min(1,peaks[i]));const y=h/2-a*h*.38;ctx.moveTo(x,y);ctx.lineTo(x,h-y)}}else{for(let x=0;x<w;x+=3){const y=h/2+Math.sin(x*.055)*h*.12+Math.sin(x*.013)*h*.18;ctx.lineTo(x,y)}}ctx.stroke()}
 function renderChordLane(){const box=$("chordLaneInner"),prog=window.cifraeProgression||[];box.innerHTML="";if(!prog.length){box.innerHTML='<span class="studioBadge">Os acordes aparecerão aqui após a análise.</span>';return}prog.forEach((x,i)=>{const s=document.createElement("span");s.className="timelineChord";s.dataset.start=x.start;s.dataset.end=x.end;s.textContent=x.chord;box.appendChild(s)})}
 function syncStudioUI(){const k=$("key").textContent,b=$("bpm").textContent,d=$("duration").textContent;$("studioKey").textContent=k;$("studioBpm").textContent=b;$("studioTime").textContent=d;$("waveDuration").textContent=d;$("metricKey").textContent=k;$("metricBpm").textContent=b;$("metricChords").textContent=(window.cifraeProgression||[]).length||$("chords").children.length;renderChordLane();$("openBand").disabled=false}
-function currentMedia(){return isVideoFile?videoPlayer:player}
+function syncMovPlayback(){
+ if(!isVideoFile||!movAudio.src)return;
+ const delta=Math.abs((videoPlayer.currentTime||0)-(movAudio.currentTime||0));
+ if(delta>.15)try{videoPlayer.currentTime=movAudio.currentTime}catch(e){}
+}
+movAudio.addEventListener("play",()=>{if(isVideoFile){syncMovPlayback();videoPlayer.play().catch(()=>{})}});
+movAudio.addEventListener("pause",()=>{if(isVideoFile&&!videoPlayer.paused)videoPlayer.pause()});
+movAudio.addEventListener("seeking",syncMovPlayback);
+movAudio.addEventListener("timeupdate",syncMovPlayback);
+function currentMedia(){return isVideoFile?movAudio:player}
 $("studioPlay").onclick=async()=>{const m=currentMedia();if(!m.src)return;try{if(m.paused){await m.play();$("studioPlay").textContent="❚❚"}else{m.pause();$("studioPlay").textContent="▶"}}catch(e){}}
 $("studioStop").onclick=()=>{const m=currentMedia();m.pause();try{m.currentTime=0}catch(e){}$("studioPlay").textContent="▶";$("playhead").style.left="0%"}
 $("studioBack").onclick=()=>{const m=currentMedia();m.playbackRate=Math.max(.5,m.playbackRate-.1);$("studioSpeed").textContent=m.playbackRate.toFixed(2)+"×"}
