@@ -407,17 +407,67 @@ function estimateKey(samples,sr){
   scores.sort((x,y)=>y.score-x.score);windows.push({ch,rms,best:scores[0],gap:scores[0].score-scores[1].score});
  }
  if(!windows.length)return {key:"—",confidence:0};
- const votes=Array.from({length:24},()=>0);
- for(const w of windows){const wt=Math.pow(w.rms,.72)*Math.max(.35,.7+w.gap*4);votes[w.best.root*2+(w.best.mode==="m"?1:0)]+=wt}
- const ranked=votes.map((v,i)=>({v,root:Math.floor(i/2),mode:i%2?"m":""})).sort((a,b)=>b.v-a.v);
- const winner=ranked[0],avg=new Float64Array(12);let sum=0;
+
+ // Método 1: perfil cromático global.
+ const avg=new Float64Array(12);let sum=0;
  for(const w of windows){const wt=Math.pow(w.rms,.72);sum+=wt;for(let i=0;i<12;i++)avg[i]+=w.ch[i]*wt}
  for(let i=0;i<12;i++)avg[i]/=(sum||1);
- const global=[];for(let root=0;root<12;root++)for(const mode of ["","m"])global.push({root,mode,score:keyScore(avg,root,mode)});
- global.sort((x,y)=>y.score-x.score);
- const combined=global.map(g=>({...g,score:g.score+.16*(votes[g.root*2+(g.mode==="m"?1:0)]/(winner.v||1))})).sort((a,b)=>b.score-a.score);
- const best=combined[0],second=combined[1]||{score:best.score-.01},key=NOTE_NAMES[best.root]+best.mode;
- const confidence=Math.round(Math.max(40,Math.min(97,50+(best.score-second.score)*90+(winner.root===best.root&&winner.mode===best.mode?10:0))));
+ const profileScores=[];
+ for(let root=0;root<12;root++)for(const mode of ["","m"])profileScores.push({root,mode,score:keyScore(avg,root,mode)});
+ profileScores.sort((x,y)=>y.score-x.score);
+
+ // Método 2: harmonia. Primeiro encontra acordes sem presumir a tonalidade.
+ // Isso evita o erro anterior em que a tonalidade escolhida influenciava
+ // artificialmente a própria progressão usada para confirmar o tom.
+ let rawProgression=[];
+ try{rawProgression=estimateChordProgression(samples,sr,null)}catch(e){rawProgression=[]}
+ const harmonicScores=[];
+ for(let root=0;root<12;root++)for(const mode of ["","m"]){
+  const key=NOTE_NAMES[root]+mode;
+  const field=diatonicChords(key);
+  const pos=new Map(field.map((name,i)=>[name,i]));
+  let score=0,totalWeight=0;
+  for(const seg of rawProgression){
+   const w=Math.max(.25,Math.min(1.5,seg.end-seg.start));
+   const idx=pos.get(seg.chord);
+   if(idx!==undefined){
+    // I = centro tonal; V e IV são evidências fortes.
+    const degreeWeight=idx===0?1.85:idx===4?1.55:idx===3?1.30:1.0;
+    score+=w*degreeWeight*Math.max(.25,seg.score);
+   }else score+=w*.06*Math.max(.25,seg.score);
+   totalWeight+=w;
+  }
+  // Reforça a presença do centro tonal e a relação dominante -> tônica.
+  if(rawProgression.length){
+   const names=rawProgression.map(x=>x.chord);
+   const tonic=field[0],dominant=field[4],sub=field[3];
+   const tonicCount=names.filter(x=>x===tonic).length;
+   const domCount=names.filter(x=>x===dominant).length;
+   score+=(tonicCount*2.2+domCount*1.2)/(rawProgression.length||1);
+   for(let i=1;i<names.length;i++)if(names[i]===tonic&&(names[i-1]===dominant||names[i-1]===sub))score+=2.5;
+  }
+  harmonicScores.push({root,mode,score:score/(totalWeight||1)});
+ }
+ harmonicScores.sort((x,y)=>y.score-x.score);
+
+ // Ensemble: a tonalidade precisa ser sustentada pela cromática E pela harmonia.
+ const pTop=profileScores[0],hTop=harmonicScores[0];
+ const maxH=harmonicScores[0]?.score||1;
+ const combined=[];
+ for(let root=0;root<12;root++)for(const mode of ["","m"]){
+  const p=profileScores.find(x=>x.root===root&&x.mode===mode);
+  const h=harmonicScores.find(x=>x.root===root&&x.mode===mode);
+  const ps=p?.score||-1, hs=h?.score||0;
+  const pNorm=(ps-(profileScores[profileScores.length-1]?.score||0))/((pTop.score-(profileScores[profileScores.length-1]?.score||0))||1);
+  const hNorm=hs/(maxH||1);
+  combined.push({root,mode,score:.42*pNorm+.58*hNorm});
+ }
+ combined.sort((x,y)=>y.score-x.score);
+ const best=combined[0],second=combined[1]||{score:best.score-.01};
+ const key=NOTE_NAMES[best.root]+best.mode;
+ const confidence=Math.round(Math.max(45,Math.min(98,50+(best.score-second.score)*120+
+   (best.root===hTop.root&&best.mode===hTop.mode?10:0)+
+   (best.root===pTop.root&&best.mode===pTop.mode?6:0))));
  return {key,confidence};
 }
 function chordTemplate(root,kind){
@@ -434,15 +484,19 @@ function chordTemplate(root,kind){
  const s=x.reduce((a,b)=>a+b,0);for(let i=0;i<12;i++)x[i]/=s;return x;
 }
 function chordCandidates(key){
- const root=NOTE_NAMES.indexOf(key.replace("m","")),minorKey=key.endsWith("m"),out=[];
+ const hasKey=typeof key==="string"&&key!=="—";
+ const minorKey=hasKey&&key.endsWith("m");
+ const root=hasKey?NOTE_NAMES.indexOf(key.replace("m","")):-1;
+ const out=[];
  const kinds=minorKey?["min","min7","7","maj","dim"]:["maj","min","7","maj7","min7","dim"];
  for(let r=0;r<12;r++)for(const kind of kinds){
   let suffix=kind==="min"?"m":kind==="7"?"7":kind==="maj7"?"maj7":kind==="min7"?"m7":kind==="dim"?"dim":"";
   out.push({name:NOTE_NAMES[r]+suffix,root:r,kind,template:chordTemplate(r,kind),diatonic:false});
  }
- // Mantém a tonalidade como prior, mas não proíbe acordes fora dela.
- const scale=minorKey?MINOR:MAJOR;
- for(const x of out){const rel=(x.root-root+12)%12;if(scale.includes(rel))x.diatonic=true}
+ if(hasKey){
+  const scale=minorKey?MINOR:MAJOR;
+  for(const x of out){const rel=(x.root-root+12)%12;if(scale.includes(rel))x.diatonic=true}
+ }
  return out;
 }
 function segmentChroma(frame,sr){return chromaFromFrame(frame,sr)}
@@ -453,7 +507,8 @@ function scoreChord(chroma,c){
  return score;
 }
 function estimateChordProgression(samples,sr,key){
- const candidates=chordCandidates(key);let bpm=null;try{bpm=estimateBpm(samples,sr)?.bpm||null}catch(e){}
+ const candidates=chordCandidates(key);
+ let bpm=null;try{bpm=estimateBpm(samples,sr)?.bpm||null}catch(e){}
  const secPerBar=bpm>55&&bpm<210?240/bpm:1.6;
  const seg=Math.max(Math.round(sr*.9),Math.min(Math.round(sr*3.2),Math.round(sr*secPerBar))),segments=[];
  for(let start=0;start<samples.length;start+=seg){
@@ -467,7 +522,12 @@ function estimateChordProgression(samples,sr,key){
   const a=segments[i-1],x=segments[i],b=segments[i+1];
   if(a.chord===b.chord&&x.chord!==a.chord&&x.margin<.055)x.chord=a.chord;
  }
- const merged=[];for(const x of segments){const last=merged[merged.length-1];if(last&&last.chord===x.chord){last.end=x.end;last.score=Math.max(last.score,x.score)}else merged.push({...x})}
+ const merged=[];
+ for(const x of segments){
+  const last=merged[merged.length-1];
+  if(last&&last.chord===x.chord){last.end=x.end;last.score=Math.max(last.score,x.score)}
+  else merged.push({...x});
+ }
  return merged;
 }
 function diatonicChords(key){const minor=key.endsWith("m");const root=NOTE_NAMES.indexOf(key.replace("m",""));const intervals=minor?[0,2,3,5,7,8,10]:[0,2,4,5,7,9,11];const suffixes=minor?["m","dim","","m","m","",""]:["","m","m","","","m","dim"];return intervals.map((d,i)=>NOTE_NAMES[(root+d)%12]+suffixes[i]).slice(0,7);}
