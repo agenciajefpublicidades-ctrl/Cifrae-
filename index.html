@@ -489,9 +489,7 @@ function estimateKey(samples,sr){
  combined.sort((x,y)=>y.score-x.score);
  const best=combined[0],second=combined[1]||{score:best.score-.01};
  const key=NOTE_NAMES[best.root]+best.mode;
- const confidence=Math.round(Math.max(45,Math.min(98,50+(best.score-second.score)*120+
-   (best.root===hTop.root&&best.mode===hTop.mode?10:0)+
-   (best.root===pTop.root&&best.mode===pTop.mode?6:0))));
+
  const alternatives=combined.slice(0,3).map(x=>({key:NOTE_NAMES[x.root]+x.mode,score:Number(x.score.toFixed(4))}));
  // A margem pequena entre candidatos indica ambiguidade; não declarar certeza artificial.
  const margin=Math.max(0,best.score-second.score);
@@ -697,7 +695,7 @@ btn.addEventListener("click",async()=>{
   if(isVideoFile){
    status.textContent="MOV/vídeo detectado. Analisando o áudio pelo navegador...";bar.style.width="28%";
    const live=await analyzeVideoLive(videoPlayer); window.cifraeProgression=live.progression||[]; window.cifraeAudioDuration=live.duration||0; bar.style.width="100%";
-   $("key").textContent=live.key; $("keyConf").textContent=live.keyConf+"% · estimativa do sinal"; $("bpm").textContent=live.bpm||"—"; $("bpmConf").textContent=(live.confidence||0)+"% confiança"; $("duration").textContent=isFinite(live.duration)?Math.floor(live.duration/60)+":"+String(Math.floor(live.duration%60)).padStart(2,"0"):"—"; const field=diatonicChords(live.key); $("fieldChords").innerHTML=field.length?field.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>'; $("chords").innerHTML=(live.progression||[]).map(x=>'<span class="chord">'+x.chord+'</span>').join("")||'<span class="conf">Progressão não identificada com segurança</span>'; result.style.display="block";window.showAccompaniment?.();syncStudioUI(); status.textContent="Análise do MOV concluída. Como o processamento é ao vivo, use os resultados como estimativa."; result.scrollIntoView({behavior:"smooth",block:"nearest"}); return;
+   $("key").textContent=live.key; $("keyConf").textContent=live.keyConf+"% · estimativa do sinal"+(live.alternatives?.length?" · alternativas: "+live.alternatives.slice(1).map(x=>x.key).join(", "):""); $("bpm").textContent=live.bpm||"—"; $("bpmConf").textContent=(live.confidence||0)+"% confiança"; $("duration").textContent=isFinite(live.duration)?Math.floor(live.duration/60)+":"+String(Math.floor(live.duration%60)).padStart(2,"0"):"—"; const field=diatonicChords(live.key); $("fieldChords").innerHTML=field.length?field.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>'; $("chords").innerHTML=(live.progression||[]).map(x=>'<span class="chord">'+x.chord+'</span>').join("")||'<span class="conf">Progressão não identificada com segurança</span>'; result.style.display="block";window.showAccompaniment?.();syncStudioUI(); status.textContent="Análise do MOV concluída. Como o processamento é ao vivo, use os resultados como estimativa."; result.scrollIntoView({behavior:"smooth",block:"nearest"}); return;
   }
   const ctx=new (window.AudioContext||window.webkitAudioContext)();const raw=await f.arrayBuffer();bar.style.width="28%";const decoded=await ctx.decodeAudioData(raw);
   const src=decoded.getChannelData(0);let mono=src;
