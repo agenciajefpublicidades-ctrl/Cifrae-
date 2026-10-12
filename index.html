@@ -448,23 +448,27 @@ function estimateKey(samples,sr){
  const harmonicScores=[];
  for(let root=0;root<12;root++)for(const mode of ["","m"]){
   const key=NOTE_NAMES[root]+mode;
-  const field=diatonicChords(key);
-  const pos=new Map(field.map((name,i)=>[name,i]));
+  // Compara a raiz do acorde, não o símbolo literal: E, E7 e Emaj7
+  // compartilham a mesma raiz; A9 e B9 continuam a evidenciar IV e V em E.
+  const chordRootOf=name=>{const m=String(name||"").match(/^[A-G]#?/);return m?NOTE_NAMES.indexOf(m[0]):-1};
+  const scaleIntervals=mode?[0,2,3,5,7,8,10]:[0,2,4,5,7,9,11];
   let score=0,totalWeight=0;
   for(const seg of rawProgression){
    const w=Math.max(.25,Math.min(1.5,seg.end-seg.start));
-   const idx=pos.get(seg.chord);
-   if(idx!==undefined){
-    // I = centro tonal; V e IV são evidências fortes.
+   const chordRoot=chordRootOf(seg.chord);
+   const degree=(chordRoot-root+12)%12;
+   const idx=scaleIntervals.indexOf(degree);
+   if(chordRoot>=0&&idx!==-1){
+    // I = centro tonal; V e IV são evidências fortes mesmo com extensões.
     const degreeWeight=idx===0?1.85:idx===4?1.55:idx===3?1.30:1.0;
     score+=w*degreeWeight*Math.max(.25,seg.score);
    }else score+=w*.06*Math.max(.25,seg.score);
    totalWeight+=w;
   }
-  // Reforça a presença do centro tonal e a relação dominante -> tônica.
+  // Reforça raízes de tônica/dominante e a resolução V -> I ou IV -> I.
   if(rawProgression.length){
-   const names=rawProgression.map(x=>x.chord);
-   const tonic=field[0],dominant=field[4],sub=field[3];
+   const names=rawProgression.map(x=>chordRootOf(x.chord));
+   const tonic=root,dominant=(root+7)%12,sub=(root+5)%12;
    const tonicCount=names.filter(x=>x===tonic).length;
    const domCount=names.filter(x=>x===dominant).length;
    score+=(tonicCount*2.2+domCount*1.2)/(rawProgression.length||1);
