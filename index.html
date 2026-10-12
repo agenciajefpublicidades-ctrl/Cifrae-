@@ -705,6 +705,8 @@ btn.addEventListener("click",async()=>{
   const progression=estimateChordProgression(mono,decoded.sampleRate,key.key);const chords=[...new Set(progression.map(x=>x.chord))];const peakCount=1600,step=Math.max(1,Math.floor(mono.length/peakCount));window.cifraeWavePeaks=Array.from({length:Math.min(peakCount,Math.ceil(mono.length/step))},(_,i)=>{let p=0,end=Math.min(mono.length,(i+1)*step);for(let j=i*step;j<end;j+=4)p=Math.max(p,Math.abs(mono[j]));return p});window.cifraeProgression=progression;window.cifraeAudioDuration=decoded.duration;drawWave();bar.style.width="100%";
   $("key").textContent=key.key;$("keyConf").textContent=key.confidence+"% força estimada"+(key.alternatives?.length?" · alternativas: "+key.alternatives.slice(1).map(x=>x.key).join(", "):"");$("bpm").textContent=bpm.bpm||"—";$("bpmConf").textContent=(bpm.confidence||0)+"% confiança";
   $("duration").textContent=Math.floor(decoded.duration/60)+":"+String(Math.floor(decoded.duration%60)).padStart(2,"0");
+  const field=diatonicChords(key.key);
+  $("fieldChords").innerHTML=field.length?field.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>';
   $("chords").innerHTML=chords.length?chords.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>';
   result.style.display="block";syncStudioUI();status.textContent="Análise concluída. Revise os resultados antes de usar a cifra.";result.scrollIntoView({behavior:"smooth",block:"nearest"});await ctx.close();
  }catch(e){console.error(e);bar.style.width="0%";status.textContent=isVideoFile?"Não consegui acessar a faixa de áudio deste MOV neste navegador. Vou ajustar o suporte para análise direta do áudio do vídeo.":"Não foi possível analisar este arquivo neste navegador. Tente MP3 ou WAV.";result.style.display="none"}
@@ -742,7 +744,7 @@ window.addEventListener("resize",drawWave);drawWave();
 
 /* Cifraê AI LIVE ENGINE — análise contínua no navegador */
 let liveAudioCtx=null,liveStream=null,liveSource=null,liveAnalyser=null,liveRaf=0;
-let liveHistory=[],liveEnergy=[],liveOnsets=[],liveLastChord="—",liveStableCount=0;
+let liveHistory=[],liveEnergy=[],liveOnsets=[],liveLastChord="—",liveStableCount=0,liveLastAnalysisAt=0;
 
 function liveKeyFromHistory(){
  if(liveHistory.length<18)return {key:"—",confidence:0};
@@ -774,27 +776,31 @@ function liveBpmEstimate(){
 }
 function liveLoop(){
  if(!liveAnalyser)return;
- const data=new Float32Array(liveAnalyser.fftSize);liveAnalyser.getFloatTimeDomainData(data);
- let rms=0;for(const v of data)rms+=v*v;rms=Math.sqrt(rms/data.length);
- if(rms>.008){
-  const chroma=chromaFromFrame(data,liveAudioCtx.sampleRate);
-  liveHistory.push(chroma);if(liveHistory.length>120)liveHistory.shift();
-  const picked=livePickChord(chroma);
-  if(picked.name===liveLastChord)liveStableCount++;else{liveLastChord=picked.name;liveStableCount=1}
-  if(liveStableCount>=3){
-   $("liveChord").textContent=picked.name;
-   $("liveChordConf").textContent=picked.confidence+"% confiança";
-   const k=liveKeyFromHistory();
-   if(k.key!=="—"){$("liveKey").textContent=k.key;$("liveKeyConf").textContent=k.confidence+"% confiança"}
-   const bpm=liveBpmEstimate();if(bpm)$("liveBpm").textContent=bpm;
-   const seq=[...new Set(liveHistory.slice(-24).map(h=>livePickChord(h).name))];
-   $("liveHarmony").innerHTML=seq.slice(-8).map(x=>'<span class="chord">'+x+'</span>').join("");
+ const now=performance.now();
+ // Processa no máximo 5 quadros por segundo: reduz ruído, CPU e oscilações da tonalidade.
+ if(now-liveLastAnalysisAt>=200){
+  liveLastAnalysisAt=now;
+  const data=new Float32Array(liveAnalyser.fftSize);liveAnalyser.getFloatTimeDomainData(data);
+  let rms=0;for(const v of data)rms+=v*v;rms=Math.sqrt(rms/data.length);
+  if(rms>.008){
+   const chroma=chromaFromFrame(data,liveAudioCtx.sampleRate);
+   liveHistory.push(chroma);if(liveHistory.length>100)liveHistory.shift();
+   const picked=livePickChord(chroma);
+   if(picked.name===liveLastChord)liveStableCount++;else{liveLastChord=picked.name;liveStableCount=1}
+   if(liveStableCount>=3){
+    $("liveChord").textContent=picked.name;
+    $("liveChordConf").textContent=picked.confidence+"% confiança";
+    const k=liveKeyFromHistory();
+    if(k.key!=="—"){$("liveKey").textContent=k.key;$("liveKeyConf").textContent=k.confidence+"% estimativa · tom pode variar"}
+    const bpm=liveBpmEstimate();if(bpm)$("liveBpm").textContent=bpm;
+    const seq=[...new Set(liveHistory.slice(-24).map(h=>livePickChord(h).name))];
+    $("liveHarmony").innerHTML=seq.slice(-8).map(x=>'<span class="chord">'+x+'</span>').join("");
+   }
+   const prev=liveEnergy[liveEnergy.length-1]?.v||0;
+   if(rms>Math.max(.012,prev*1.35))liveOnsets.push(now);
+   liveEnergy.push({t:now,v:rms});if(liveEnergy.length>180)liveEnergy.shift();
+   liveOnsets=liveOnsets.filter(t=>now-t<12000);
   }
-  const now=performance.now();
-  const prev=liveEnergy[liveEnergy.length-1]?.v||0;
-  if(rms>Math.max(.012,prev*1.35))liveOnsets.push(now);
-  liveEnergy.push({t:now,v:rms});if(liveEnergy.length>180)liveEnergy.shift();
-  liveOnsets=liveOnsets.filter(t=>now-t<12000);
  }
  liveRaf=requestAnimationFrame(liveLoop);
 }
@@ -806,7 +812,7 @@ async function startCifraeLive(){
   liveAudioCtx=new (window.AudioContext||window.webkitAudioContext)();await liveAudioCtx.resume();
   liveSource=liveAudioCtx.createMediaStreamSource(liveStream);
   liveAnalyser=liveAudioCtx.createAnalyser();liveAnalyser.fftSize=4096;liveAnalyser.smoothingTimeConstant=.15;
-  liveSource.connect(liveAnalyser);liveHistory=[];liveEnergy=[];liveOnsets=[];liveLastChord="—";liveStableCount=0;
+  liveSource.connect(liveAnalyser);liveHistory=[];liveEnergy=[];liveOnsets=[];liveLastChord="—";liveStableCount=0;liveLastAnalysisAt=0;
   $("liveStatus").textContent="Ouvindo ao vivo…";
   liveRaf=requestAnimationFrame(liveLoop);
  }catch(e){
