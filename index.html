@@ -492,7 +492,12 @@ function estimateKey(samples,sr){
  const confidence=Math.round(Math.max(45,Math.min(98,50+(best.score-second.score)*120+
    (best.root===hTop.root&&best.mode===hTop.mode?10:0)+
    (best.root===pTop.root&&best.mode===pTop.mode?6:0))));
- return {key,confidence};
+ const alternatives=combined.slice(0,3).map(x=>({key:NOTE_NAMES[x.root]+x.mode,score:Number(x.score.toFixed(4))}));
+ // A margem pequena entre candidatos indica ambiguidade; não declarar certeza artificial.
+ const margin=Math.max(0,best.score-second.score);
+ const agreement=(best.root===hTop.root&&best.mode===hTop.mode?1:0)+(best.root===pTop.root&&best.mode===pTop.mode?1:0);
+ const confidence=Math.round(Math.max(25,Math.min(92,35+margin*220+agreement*8)));
+ return {key,confidence,alternatives};
 }
 function chordTemplate(root,kind){
  const x=new Float64Array(12);
@@ -692,7 +697,7 @@ btn.addEventListener("click",async()=>{
   if(isVideoFile){
    status.textContent="MOV/vídeo detectado. Analisando o áudio pelo navegador...";bar.style.width="28%";
    const live=await analyzeVideoLive(videoPlayer); window.cifraeProgression=live.progression||[]; window.cifraeAudioDuration=live.duration||0; bar.style.width="100%";
-   $("key").textContent=live.key; $("keyConf").textContent=live.keyConf+"% confiança"; $("bpm").textContent=live.bpm||"—"; $("bpmConf").textContent=(live.confidence||0)+"% confiança"; $("duration").textContent=isFinite(live.duration)?Math.floor(live.duration/60)+":"+String(Math.floor(live.duration%60)).padStart(2,"0"):"—"; const field=diatonicChords(live.key); $("fieldChords").innerHTML=field.length?field.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>'; $("chords").innerHTML=(live.progression||[]).map(x=>'<span class="chord">'+x.chord+'</span>').join("")||'<span class="conf">Progressão não identificada com segurança</span>'; result.style.display="block";window.showAccompaniment?.();syncStudioUI(); status.textContent="Análise do MOV concluída. Como o processamento é ao vivo, use os resultados como estimativa."; result.scrollIntoView({behavior:"smooth",block:"nearest"}); return;
+   $("key").textContent=live.key; $("keyConf").textContent=live.keyConf+"% · estimativa do sinal"; $("bpm").textContent=live.bpm||"—"; $("bpmConf").textContent=(live.confidence||0)+"% confiança"; $("duration").textContent=isFinite(live.duration)?Math.floor(live.duration/60)+":"+String(Math.floor(live.duration%60)).padStart(2,"0"):"—"; const field=diatonicChords(live.key); $("fieldChords").innerHTML=field.length?field.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>'; $("chords").innerHTML=(live.progression||[]).map(x=>'<span class="chord">'+x.chord+'</span>').join("")||'<span class="conf">Progressão não identificada com segurança</span>'; result.style.display="block";window.showAccompaniment?.();syncStudioUI(); status.textContent="Análise do MOV concluída. Como o processamento é ao vivo, use os resultados como estimativa."; result.scrollIntoView({behavior:"smooth",block:"nearest"}); return;
   }
   const ctx=new (window.AudioContext||window.webkitAudioContext)();const raw=await f.arrayBuffer();bar.style.width="28%";const decoded=await ctx.decodeAudioData(raw);
   const src=decoded.getChannelData(0);let mono=src;
@@ -700,7 +705,7 @@ btn.addEventListener("click",async()=>{
   status.textContent="Estimando BPM e tonalidade...";bar.style.width="55%";
   const bpm=estimateBpm(mono,decoded.sampleRate);const key=estimateKey(mono,decoded.sampleRate);bar.style.width="78%";
   const progression=estimateChordProgression(mono,decoded.sampleRate,key.key);const chords=[...new Set(progression.map(x=>x.chord))];const peakCount=1600,step=Math.max(1,Math.floor(mono.length/peakCount));window.cifraeWavePeaks=Array.from({length:Math.min(peakCount,Math.ceil(mono.length/step))},(_,i)=>{let p=0,end=Math.min(mono.length,(i+1)*step);for(let j=i*step;j<end;j+=4)p=Math.max(p,Math.abs(mono[j]));return p});window.cifraeProgression=progression;window.cifraeAudioDuration=decoded.duration;drawWave();bar.style.width="100%";
-  $("key").textContent=key.key;$("keyConf").textContent=key.confidence+"% confiança";$("bpm").textContent=bpm.bpm||"—";$("bpmConf").textContent=(bpm.confidence||0)+"% confiança";
+  $("key").textContent=key.key;$("keyConf").textContent=key.confidence+"% força estimada"+(key.alternatives?.length?" · alternativas: "+key.alternatives.slice(1).map(x=>x.key).join(", "):"");$("bpm").textContent=bpm.bpm||"—";$("bpmConf").textContent=(bpm.confidence||0)+"% confiança";
   $("duration").textContent=Math.floor(decoded.duration/60)+":"+String(Math.floor(decoded.duration%60)).padStart(2,"0");
   $("chords").innerHTML=chords.length?chords.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>';
   result.style.display="block";syncStudioUI();status.textContent="Análise concluída. Revise os resultados antes de usar a cifra.";result.scrollIntoView({behavior:"smooth",block:"nearest"});await ctx.close();
