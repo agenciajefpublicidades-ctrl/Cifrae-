@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#101713"><title>Cifraê — Caderno offline</title>
+<style>
+:root{color-scheme:dark;--bg:#101713;--panel:#1b2720;--line:#304638;--green:#7aef9b;--muted:#b1c3b5}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f5f8f5;font:16px system-ui,-apple-system,sans-serif}main{max-width:760px;margin:auto;padding:22px 16px 60px}header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:24px}.logo{font-weight:900;font-size:28px;letter-spacing:-1px}.logo span{color:var(--green)}a{color:var(--green)}h1{font-size:clamp(30px,7vw,44px);line-height:1.05;margin:10px 0}p{color:var(--muted);line-height:1.5}.panel{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:18px;margin:16px 0}.row{display:flex;gap:10px;flex-wrap:wrap}input,textarea,button{font:inherit;border-radius:12px;border:1px solid #47674f;padding:12px;background:#202f25;color:#fff;width:100%}textarea{min-height:160px;resize:vertical}.row>*{flex:1;min-width:130px}button{cursor:pointer;font-weight:700;background:var(--green);color:#102016;border:0}button.secondary{background:#293a2e;color:#f5f8f5;border:1px solid var(--line)}.search{margin:14px 0}.song{padding:14px;border:1px solid var(--line);border-radius:14px;margin:10px 0}.song h3{margin:0 0 5px}.song small{color:var(--muted)}.song-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}.song-actions button{width:auto;padding:8px 12px}.chords{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}.status{font-size:13px;color:var(--green)}.hidden{display:none!important}.empty{color:var(--muted);padding:12px 0}footer{font-size:13px;color:var(--muted);margin-top:28px}
+</style></head><body><main>
+<header><div class="logo">Cifra<span>ê</span></div><a href="./index.html">Análise musical ↗</a></header>
+<p class="status" id="network">Preparando modo offline…</p>
+<h1>Seu caderno de <span style="color:var(--green)">músicas</span></h1>
+<p>Guarde cifras e repertórios neste aparelho para consultar na igreja, mesmo sem internet. Na primeira visita, abra esta página conectado para ela ficar disponível offline.</p>
+<section class="panel">
+<h2>Pesquisar no seu caderno</h2><input id="search" class="search" placeholder="Nome da música, artista ou trecho…" autocomplete="off">
+<div class="row"><button id="external" class="secondary">Buscar na internet</button><button id="newSong">＋ Adicionar música</button></div>
+<div id="results"></div>
+</section>
+<section class="panel hidden" id="editor">
+<h2 id="editorTitle">Adicionar música</h2>
+<label for="title">Nome da música</label><input id="title" placeholder="Ex.: Glória">
+<label for="artist">Artista / ministério</label><input id="artist" placeholder="Nome do artista">
+<label for="key">Tom original (opcional)</label><input id="key" placeholder="Ex.: E, G, Am">
+<label for="lyrics">Cifra, acordes e anotações</label><textarea id="lyrics" placeholder="Cole ou escreva aqui a cifra que você tem autorização para guardar…"></textarea>
+<div class="row"><button id="save">Salvar neste aparelho</button><button class="secondary" id="cancel">Cancelar</button></div>
+<p>As músicas adicionadas ficam guardadas localmente neste navegador. Para abrir offline, salve-as antes de ficar sem sinal.</p>
+</section>
+<section class="panel hidden" id="viewer"><div class="row"><div><h2 id="viewTitle"></h2><p id="viewMeta"></p></div><button id="closeView" class="secondary" style="flex:0 0 auto">Fechar</button></div>
+<div class="row"><button id="down" class="secondary">− Tom</button><button id="up" class="secondary">＋ Tom</button><button id="reset" class="secondary">Tom original</button></div>
+<p id="viewKey" class="status"></p><div id="viewLyrics" class="chords"></div><div class="song-actions"><button id="edit" class="secondary">Editar</button><button id="delete" class="secondary">Excluir</button></div></section>
+<footer>Cifraê • Caderno offline. A busca na internet precisa de conexão; músicas salvas podem ser abertas sem sinal depois que esta página for carregada uma vez online.</footer>
+</main>
+<script>
+const DBKEY='cifrae_offline_songs_v1',NOTES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];let songs=[],editing=null,current=null,shift=0;
+const $=id=>document.getElementById(id);
+function load(){try{songs=JSON.parse(localStorage.getItem(DBKEY)||'[]')}catch{songs=[]}render()}
+function persist(){localStorage.setItem(DBKEY,JSON.stringify(songs));render()}
+function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function render(){const q=$('search').value.trim().toLocaleLowerCase('pt-BR');const filtered=songs.filter(s=>(s.title+' '+s.artist+' '+s.lyrics).toLocaleLowerCase('pt-BR').includes(q));$('results').innerHTML=filtered.length?filtered.map(s=>'<article class="song"><h3>'+escapeHtml(s.title)+'</h3><small>'+escapeHtml(s.artist||'Artista não informado')+(s.key?' • Tom '+escapeHtml(s.key):'')+'</small><div class="song-actions"><button data-open="'+s.id+'">Abrir cifra</button><button class="secondary" data-edit="'+s.id+'">Editar</button></div></article>').join(''):'<p class="empty">'+(songs.length?'Nenhuma música encontrada no caderno.':'Seu caderno ainda está vazio. Adicione músicas enquanto estiver online para consultá-las depois offline.')+'</p>';document.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>openSong(b.dataset.open));document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>editSong(b.dataset.edit))}
+function showEditor(){ $('editor').classList.remove('hidden');$('viewer').classList.add('hidden');$('title').focus()}
+function newSong(){editing=null;$('editorTitle').textContent='Adicionar música';['title','artist','key','lyrics'].forEach(id=>$(id).value='');showEditor()}
+function editSong(id){const s=songs.find(x=>x.id===id);if(!s)return;editing=id;$('editorTitle').textContent='Editar música';$('title').value=s.title;$('artist').value=s.artist||'';$('key').value=s.key||'';$('lyrics').value=s.lyrics||'';showEditor()}
+function saveSong(){const title=$('title').value.trim();if(!title){alert('Digite o nome da música.');return}const old=songs.find(x=>x.id===editing);const s={id:editing||String(Date.now())+'-'+Math.random().toString(36).slice(2,7),title,artist:$('artist').value.trim(),key:$('key').value.trim(),lyrics:$('lyrics').value,updated:Date.now()};songs=editing?songs.map(x=>x.id===editing?s:x):[s,...songs];persist();$('editor').classList.add('hidden');if(old)openSong(s.id)}
+function openSong(id){current=songs.find(x=>x.id===id);if(!current)return;shift=0;renderViewer();$('viewer').classList.remove('hidden');$('editor').classList.add('hidden');$('viewer').scrollIntoView({behavior:'smooth',block:'start'})}
+function transposeText(text,n){return text.replace(/\b([A-G])([#b]?)(m|min|maj|dim|aug|sus|add)?(\d{0,2})?((?:\/[A-G][#b]?)?)/g,(all,l,a,q,num,slash)=>{const flat={'Db':'C#','Eb':'D#','Gb':'F#','Ab':'G#','Bb':'A#'};let name=flat[l+a]||l+a;let i=NOTES.indexOf(name);if(i<0)return all;let nn=NOTES[(i+n+120)%12];let bass=slash;if(slash){const m=slash.match(/^\/([A-G])([#b]?)$/);if(m){let bn=flat[m[1]+m[2]]||m[1]+m[2];let bi=NOTES.indexOf(bn);if(bi>=0)bass='/'+NOTES[(bi+n+120)%12]}}return nn+(q||'')+(num||'')+bass})}
+function renderViewer(){if(!current)return;$('viewTitle').textContent=current.title;$('viewMeta').textContent=current.artist||'Artista não informado';$('viewKey').textContent='Tom: '+(current.key?transposeText(current.key,shift):'não informado')+(shift?' • transposição '+(shift>0?'+':'')+shift+' semitom(ns)':'');$('viewLyrics').textContent=shift?transposeText(current.lyrics,shift):current.lyrics||'Nenhuma cifra cadastrada para esta música.'}
+$('search').addEventListener('input',render);$('newSong').onclick=newSong;$('save').onclick=saveSong;$('cancel').onclick=()=>$('editor').classList.add('hidden');$('closeView').onclick=()=>$('viewer').classList.add('hidden');$('up').onclick=()=>{shift++;renderViewer()};$('down').onclick=()=>{shift--;renderViewer()};$('reset').onclick=()=>{shift=0;renderViewer()};$('edit').onclick=()=>current&&editSong(current.id);$('delete').onclick=()=>{if(current&&confirm('Excluir esta música deste aparelho?')){songs=songs.filter(s=>s.id!==current.id);persist();current=null;$('viewer').classList.add('hidden')}};$('external').onclick=()=>{const q=$('search').value.trim();window.open('https://decifrando.app.br/musicas'+(q?'?q='+encodeURIComponent(q):''),'_blank','noopener')};
+if('serviceWorker'in navigator){navigator.serviceWorker.register('./sw.js').then(()=>$('network').textContent=navigator.onLine?'Modo offline preparado neste navegador.':'Sem conexão • caderno local disponível.').catch(()=>$('network').textContent='Caderno local disponível; cache offline não pôde ser ativado neste endereço.')}else $('network').textContent='Caderno local disponível; este navegador não oferece cache offline.';
+window.addEventListener('online',()=>$('network').textContent='Conectado • suas músicas salvas continuam neste aparelho.');window.addEventListener('offline',()=>$('network').textContent='Sem conexão • caderno local disponível.');
+load();
+</script></body></html>
