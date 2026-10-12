@@ -677,7 +677,7 @@ async function analyzeVideoLive(video){
    return peak;
   });
 
-  return {key:key.key,keyConf:key.confidence||0,bpm:bpmData?.bpm||null,
+  return {key:key.key,keyConf:key.confidence||0,alternatives:key.alternatives||[],bpm:bpmData?.bpm||null,
    confidence:bpmData?.confidence||0,chords:chordNames,duration:safeDuration,progression};
  }finally{
   collecting=false;
