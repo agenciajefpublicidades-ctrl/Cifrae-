@@ -448,23 +448,27 @@ function estimateKey(samples,sr){
  const harmonicScores=[];
  for(let root=0;root<12;root++)for(const mode of ["","m"]){
   const key=NOTE_NAMES[root]+mode;
-  const field=diatonicChords(key);
-  const pos=new Map(field.map((name,i)=>[name,i]));
+  // Compara a raiz do acorde, não o símbolo literal: E, E7 e Emaj7
+  // compartilham a mesma raiz; A9 e B9 continuam a evidenciar IV e V em E.
+  const chordRootOf=name=>{const m=String(name||"").match(/^[A-G]#?/);return m?NOTE_NAMES.indexOf(m[0]):-1};
+  const scaleIntervals=mode?[0,2,3,5,7,8,10]:[0,2,4,5,7,9,11];
   let score=0,totalWeight=0;
   for(const seg of rawProgression){
    const w=Math.max(.25,Math.min(1.5,seg.end-seg.start));
-   const idx=pos.get(seg.chord);
-   if(idx!==undefined){
-    // I = centro tonal; V e IV são evidências fortes.
+   const chordRoot=chordRootOf(seg.chord);
+   const degree=(chordRoot-root+12)%12;
+   const idx=scaleIntervals.indexOf(degree);
+   if(chordRoot>=0&&idx!==-1){
+    // I = centro tonal; V e IV são evidências fortes mesmo com extensões.
     const degreeWeight=idx===0?1.85:idx===4?1.55:idx===3?1.30:1.0;
     score+=w*degreeWeight*Math.max(.25,seg.score);
    }else score+=w*.06*Math.max(.25,seg.score);
    totalWeight+=w;
   }
-  // Reforça a presença do centro tonal e a relação dominante -> tônica.
+  // Reforça raízes de tônica/dominante e a resolução V -> I ou IV -> I.
   if(rawProgression.length){
-   const names=rawProgression.map(x=>x.chord);
-   const tonic=field[0],dominant=field[4],sub=field[3];
+   const names=rawProgression.map(x=>chordRootOf(x.chord));
+   const tonic=root,dominant=(root+7)%12,sub=(root+5)%12;
    const tonicCount=names.filter(x=>x===tonic).length;
    const domCount=names.filter(x=>x===dominant).length;
    score+=(tonicCount*2.2+domCount*1.2)/(rawProgression.length||1);
@@ -489,10 +493,13 @@ function estimateKey(samples,sr){
  combined.sort((x,y)=>y.score-x.score);
  const best=combined[0],second=combined[1]||{score:best.score-.01};
  const key=NOTE_NAMES[best.root]+best.mode;
- const confidence=Math.round(Math.max(45,Math.min(98,50+(best.score-second.score)*120+
-   (best.root===hTop.root&&best.mode===hTop.mode?10:0)+
-   (best.root===pTop.root&&best.mode===pTop.mode?6:0))));
- return {key,confidence};
+
+ const alternatives=combined.slice(0,3).map(x=>({key:NOTE_NAMES[x.root]+x.mode,score:Number(x.score.toFixed(4))}));
+ // A margem pequena entre candidatos indica ambiguidade; não declarar certeza artificial.
+ const margin=Math.max(0,best.score-second.score);
+ const agreement=(best.root===hTop.root&&best.mode===hTop.mode?1:0)+(best.root===pTop.root&&best.mode===pTop.mode?1:0);
+ const confidence=Math.round(Math.max(25,Math.min(92,35+margin*220+agreement*8)));
+ return {key,confidence,alternatives};
 }
 function chordTemplate(root,kind){
  const x=new Float64Array(12);
@@ -674,7 +681,7 @@ async function analyzeVideoLive(video){
    return peak;
   });
 
-  return {key:key.key,keyConf:key.confidence||0,bpm:bpmData?.bpm||null,
+  return {key:key.key,keyConf:key.confidence||0,alternatives:key.alternatives||[],bpm:bpmData?.bpm||null,
    confidence:bpmData?.confidence||0,chords:chordNames,duration:safeDuration,progression};
  }finally{
   collecting=false;
@@ -692,7 +699,7 @@ btn.addEventListener("click",async()=>{
   if(isVideoFile){
    status.textContent="MOV/vídeo detectado. Analisando o áudio pelo navegador...";bar.style.width="28%";
    const live=await analyzeVideoLive(videoPlayer); window.cifraeProgression=live.progression||[]; window.cifraeAudioDuration=live.duration||0; bar.style.width="100%";
-   $("key").textContent=live.key; $("keyConf").textContent=live.keyConf+"% confiança"; $("bpm").textContent=live.bpm||"—"; $("bpmConf").textContent=(live.confidence||0)+"% confiança"; $("duration").textContent=isFinite(live.duration)?Math.floor(live.duration/60)+":"+String(Math.floor(live.duration%60)).padStart(2,"0"):"—"; const field=diatonicChords(live.key); $("fieldChords").innerHTML=field.length?field.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>'; $("chords").innerHTML=(live.progression||[]).map(x=>'<span class="chord">'+x.chord+'</span>').join("")||'<span class="conf">Progressão não identificada com segurança</span>'; result.style.display="block";window.showAccompaniment?.();syncStudioUI(); status.textContent="Análise do MOV concluída. Como o processamento é ao vivo, use os resultados como estimativa."; result.scrollIntoView({behavior:"smooth",block:"nearest"}); return;
+   $("key").textContent=live.key; $("keyConf").textContent=live.keyConf+"% · estimativa do sinal"+(live.alternatives?.length?" · alternativas: "+live.alternatives.slice(1).map(x=>x.key).join(", "):""); $("bpm").textContent=live.bpm||"—"; $("bpmConf").textContent=(live.confidence||0)+"% confiança"; $("duration").textContent=isFinite(live.duration)?Math.floor(live.duration/60)+":"+String(Math.floor(live.duration%60)).padStart(2,"0"):"—"; const field=diatonicChords(live.key); $("fieldChords").innerHTML=field.length?field.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>'; $("chords").innerHTML=(live.progression||[]).map(x=>'<span class="chord">'+x.chord+'</span>').join("")||'<span class="conf">Progressão não identificada com segurança</span>'; result.style.display="block";window.showAccompaniment?.();syncStudioUI(); status.textContent="Análise do MOV concluída. Como o processamento é ao vivo, use os resultados como estimativa."; result.scrollIntoView({behavior:"smooth",block:"nearest"}); return;
   }
   const ctx=new (window.AudioContext||window.webkitAudioContext)();const raw=await f.arrayBuffer();bar.style.width="28%";const decoded=await ctx.decodeAudioData(raw);
   const src=decoded.getChannelData(0);let mono=src;
@@ -700,8 +707,10 @@ btn.addEventListener("click",async()=>{
   status.textContent="Estimando BPM e tonalidade...";bar.style.width="55%";
   const bpm=estimateBpm(mono,decoded.sampleRate);const key=estimateKey(mono,decoded.sampleRate);bar.style.width="78%";
   const progression=estimateChordProgression(mono,decoded.sampleRate,key.key);const chords=[...new Set(progression.map(x=>x.chord))];const peakCount=1600,step=Math.max(1,Math.floor(mono.length/peakCount));window.cifraeWavePeaks=Array.from({length:Math.min(peakCount,Math.ceil(mono.length/step))},(_,i)=>{let p=0,end=Math.min(mono.length,(i+1)*step);for(let j=i*step;j<end;j+=4)p=Math.max(p,Math.abs(mono[j]));return p});window.cifraeProgression=progression;window.cifraeAudioDuration=decoded.duration;drawWave();bar.style.width="100%";
-  $("key").textContent=key.key;$("keyConf").textContent=key.confidence+"% confiança";$("bpm").textContent=bpm.bpm||"—";$("bpmConf").textContent=(bpm.confidence||0)+"% confiança";
+  $("key").textContent=key.key;$("keyConf").textContent=key.confidence+"% força estimada"+(key.alternatives?.length?" · alternativas: "+key.alternatives.slice(1).map(x=>x.key).join(", "):"");$("bpm").textContent=bpm.bpm||"—";$("bpmConf").textContent=(bpm.confidence||0)+"% confiança";
   $("duration").textContent=Math.floor(decoded.duration/60)+":"+String(Math.floor(decoded.duration%60)).padStart(2,"0");
+  const field=diatonicChords(key.key);
+  $("fieldChords").innerHTML=field.length?field.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>';
   $("chords").innerHTML=chords.length?chords.map(c=>'<span class="chord">'+c+'</span>').join(""):'<span class="conf">Não identificado com segurança</span>';
   result.style.display="block";syncStudioUI();status.textContent="Análise concluída. Revise os resultados antes de usar a cifra.";result.scrollIntoView({behavior:"smooth",block:"nearest"});await ctx.close();
  }catch(e){console.error(e);bar.style.width="0%";status.textContent=isVideoFile?"Não consegui acessar a faixa de áudio deste MOV neste navegador. Vou ajustar o suporte para análise direta do áudio do vídeo.":"Não foi possível analisar este arquivo neste navegador. Tente MP3 ou WAV.";result.style.display="none"}
@@ -739,7 +748,7 @@ window.addEventListener("resize",drawWave);drawWave();
 
 /* Cifraê AI LIVE ENGINE — análise contínua no navegador */
 let liveAudioCtx=null,liveStream=null,liveSource=null,liveAnalyser=null,liveRaf=0;
-let liveHistory=[],liveEnergy=[],liveOnsets=[],liveLastChord="—",liveStableCount=0;
+let liveHistory=[],liveEnergy=[],liveOnsets=[],liveLastChord="—",liveStableCount=0,liveLastAnalysisAt=0;
 
 function liveKeyFromHistory(){
  if(liveHistory.length<18)return {key:"—",confidence:0};
@@ -771,27 +780,31 @@ function liveBpmEstimate(){
 }
 function liveLoop(){
  if(!liveAnalyser)return;
- const data=new Float32Array(liveAnalyser.fftSize);liveAnalyser.getFloatTimeDomainData(data);
- let rms=0;for(const v of data)rms+=v*v;rms=Math.sqrt(rms/data.length);
- if(rms>.008){
-  const chroma=chromaFromFrame(data,liveAudioCtx.sampleRate);
-  liveHistory.push(chroma);if(liveHistory.length>120)liveHistory.shift();
-  const picked=livePickChord(chroma);
-  if(picked.name===liveLastChord)liveStableCount++;else{liveLastChord=picked.name;liveStableCount=1}
-  if(liveStableCount>=3){
-   $("liveChord").textContent=picked.name;
-   $("liveChordConf").textContent=picked.confidence+"% confiança";
-   const k=liveKeyFromHistory();
-   if(k.key!=="—"){$("liveKey").textContent=k.key;$("liveKeyConf").textContent=k.confidence+"% confiança"}
-   const bpm=liveBpmEstimate();if(bpm)$("liveBpm").textContent=bpm;
-   const seq=[...new Set(liveHistory.slice(-24).map(h=>livePickChord(h).name))];
-   $("liveHarmony").innerHTML=seq.slice(-8).map(x=>'<span class="chord">'+x+'</span>').join("");
+ const now=performance.now();
+ // Processa no máximo 5 quadros por segundo: reduz ruído, CPU e oscilações da tonalidade.
+ if(now-liveLastAnalysisAt>=200){
+  liveLastAnalysisAt=now;
+  const data=new Float32Array(liveAnalyser.fftSize);liveAnalyser.getFloatTimeDomainData(data);
+  let rms=0;for(const v of data)rms+=v*v;rms=Math.sqrt(rms/data.length);
+  if(rms>.008){
+   const chroma=chromaFromFrame(data,liveAudioCtx.sampleRate);
+   liveHistory.push(chroma);if(liveHistory.length>100)liveHistory.shift();
+   const picked=livePickChord(chroma);
+   if(picked.name===liveLastChord)liveStableCount++;else{liveLastChord=picked.name;liveStableCount=1}
+   if(liveStableCount>=3){
+    $("liveChord").textContent=picked.name;
+    $("liveChordConf").textContent=picked.confidence+"% confiança";
+    const k=liveKeyFromHistory();
+    if(k.key!=="—"){$("liveKey").textContent=k.key;$("liveKeyConf").textContent=k.confidence+"% estimativa · tom pode variar"}
+    const bpm=liveBpmEstimate();if(bpm)$("liveBpm").textContent=bpm;
+    const seq=[...new Set(liveHistory.slice(-24).map(h=>livePickChord(h).name))];
+    $("liveHarmony").innerHTML=seq.slice(-8).map(x=>'<span class="chord">'+x+'</span>').join("");
+   }
+   const prev=liveEnergy[liveEnergy.length-1]?.v||0;
+   if(rms>Math.max(.012,prev*1.35))liveOnsets.push(now);
+   liveEnergy.push({t:now,v:rms});if(liveEnergy.length>180)liveEnergy.shift();
+   liveOnsets=liveOnsets.filter(t=>now-t<12000);
   }
-  const now=performance.now();
-  const prev=liveEnergy[liveEnergy.length-1]?.v||0;
-  if(rms>Math.max(.012,prev*1.35))liveOnsets.push(now);
-  liveEnergy.push({t:now,v:rms});if(liveEnergy.length>180)liveEnergy.shift();
-  liveOnsets=liveOnsets.filter(t=>now-t<12000);
  }
  liveRaf=requestAnimationFrame(liveLoop);
 }
@@ -803,7 +816,7 @@ async function startCifraeLive(){
   liveAudioCtx=new (window.AudioContext||window.webkitAudioContext)();await liveAudioCtx.resume();
   liveSource=liveAudioCtx.createMediaStreamSource(liveStream);
   liveAnalyser=liveAudioCtx.createAnalyser();liveAnalyser.fftSize=4096;liveAnalyser.smoothingTimeConstant=.15;
-  liveSource.connect(liveAnalyser);liveHistory=[];liveEnergy=[];liveOnsets=[];liveLastChord="—";liveStableCount=0;
+  liveSource.connect(liveAnalyser);liveHistory=[];liveEnergy=[];liveOnsets=[];liveLastChord="—";liveStableCount=0;liveLastAnalysisAt=0;
   $("liveStatus").textContent="Ouvindo ao vivo…";
   liveRaf=requestAnimationFrame(liveLoop);
  }catch(e){
