@@ -11,6 +11,7 @@
 header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:36px}
 .logo{font-size:31px;font-weight:900;letter-spacing:-1.8px}.logo span{color:#7aef9b}
 .pill{border:1px solid #37503d;border-radius:30px;padding:7px 12px;color:#a8c6af;font-size:12px}
+.headerLinks{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}.headerLinks a{color:#a8c6af}@media(max-width:440px){.headerLinks{max-width:58%}.headerLinks .pill{font-size:10px;padding:6px 8px}.logo{font-size:26px}}
 h1{font-size:clamp(34px,8vw,58px);letter-spacing:-2.5px;line-height:1.02;margin:0 0 12px}
 p{color:#b1c3b5;line-height:1.5}.accent{color:#7aef9b}
 .panel{background:#1b2720;border:1px solid #304638;border-radius:22px;padding:22px;margin:20px 0}
@@ -66,7 +67,7 @@ main>h1,main>header+h1,main>header+h1+p{display:none}
 </style>
 </head>
 <body><main>
-<header><div class="logo">cifra<span>ê</span> ♪</div><div class="pill">STUDIO · V6</div></header><section class="studio" id="studio">
+<header><div class="logo">cifra<span>ê</span> ♪</div><div class="headerLinks"><span class="pill">STUDIO · V6</span><a class="pill" href="./songbook.html" style="text-decoration:none">📚 Caderno Offline</a></div></header><section class="studio" id="studio">
 <div class="studioTop"><div class="songTitle"><strong id="studioSong">Nenhuma música carregada</strong><small>Cifraê Studio · análise musical</small></div><div class="studioBadges"><span class="studioBadge">Tom <b id="studioKey">—</b></span><span class="studioBadge">BPM <b id="studioBpm">—</b></span><span class="studioBadge">Tempo <b id="studioTime">0:00</b></span></div></div>
 <div class="transport">
 <div class="transportBar"><button class="playMain" id="studioPlay" disabled>▶</button><button class="speed" id="studioBack" disabled>−</button><span class="studioBadge" id="studioSpeed">1.00×</span><button class="speed" id="studioForward" disabled>+</button><button class="secondary" id="studioStop" disabled>■</button><span style="margin-left:auto;color:#7f9887;font-size:11px">PLAYER</span></div>
@@ -108,6 +109,7 @@ main>h1,main>header+h1,main>header+h1+p{display:none}
 </section>
 <section id="result" class="panel">
 <h2>Análise concluída ✓</h2>
+<div class="actions"><button id="saveToOffline" type="button">📚 Salvar no Caderno Offline</button></div><p id="offlineSaveStatus" class="notice" role="status">Salve a cifra neste aparelho para consultá-la sem internet.</p>
 <div class="stats">
 <div class="stat"><small>Tom estimado</small><strong id="key">—</strong><span id="keyConf" class="conf">—</span></div>
 <div class="stat"><small>BPM estimado</small><strong id="bpm">—</strong><span id="bpmConf" class="conf">—</span></div>
@@ -820,4 +822,33 @@ function stopCifraeLive(){
 }
 $("liveStart").addEventListener("click",startCifraeLive);
 $("liveStop").addEventListener("click",stopCifraeLive);
+
+/* Cifraê offline: cache do aplicativo e salvamento de cifras no aparelho */
+const offlineSaveButton=document.getElementById('saveToOffline');
+if(offlineSaveButton){
+ offlineSaveButton.addEventListener('click',()=>{
+  const chosen=document.getElementById('file')?.files?.[0];
+  const title=(chosen?.name||'Música analisada').replace(/\\.[^.]+$/,'').replace(/[_-]+/g,' ').trim();
+  const key=document.getElementById('key')?.textContent||'';
+  const progression=window.cifraeProgression||[];
+  const chordText=progression.length
+   ? progression.map(x=>{const t=Math.max(0,Math.floor(Number(x.start)||0));return String(Math.floor(t/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0')+' — '+x.chord}).join('\\n')
+   : (document.getElementById('chords')?.innerText||'');
+  const lyrics='Tom identificado: '+key+'\\n\\nProgressão estimada:\\n'+chordText+'\\n\\nNota: cifra gerada automaticamente; confira os acordes antes de usar.';
+  try{
+   const dbKey='cifrae_offline_songs_v1';
+   const saved=JSON.parse(localStorage.getItem(dbKey)||'[]');
+   const item={id:String(Date.now())+'-'+Math.random().toString(36).slice(2,7),title,artist:'',key,lyrics,updated:Date.now()};
+   saved.unshift(item);
+   localStorage.setItem(dbKey,JSON.stringify(saved));
+   document.getElementById('offlineSaveStatus').textContent='Salvo neste aparelho! Abra “Caderno Offline” no topo para pesquisar e transpor a cifra.';
+  }catch(e){
+   document.getElementById('offlineSaveStatus').textContent='Não consegui salvar neste navegador. Verifique se o armazenamento do site está permitido.';
+  }
+ });
+}
+if('serviceWorker' in navigator){
+ window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(e=>console.warn('Cache offline indisponível:',e)));
+}
+
 </script></body></html>
