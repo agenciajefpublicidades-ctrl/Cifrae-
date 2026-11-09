@@ -133,6 +133,22 @@ main>h1,main>header+h1,main>header+h1+p{display:none}
 <p class="notice">Biblioteca online: guitarra elétrica e contrabaixo com amostras reais. Fonte: ToneJS-Instruments / CC BY 3.0 — atribuição incluída no Cifraê.</p>
 </section>
 <section id="acompanhamento" class="panel" style="display:none"><h2>🎚️ Acompanhamento</h2><p>Escolha os instrumentos que acompanharão a harmonia detectada.</p><div id="instrumentList" style="display:grid;gap:10px"></div><div class="actions"><button id="generateBand">✨ Gerar acompanhamento</button><button class="secondary" id="stopBand">■ Parar</button></div><p id="bandStatus" class="notice">Aguardando instrumentos.</p></section>
+
+<section id="separadorIA" class="panel" style="border-color:#477451;background:linear-gradient(145deg,#1b2b20,#111a14)">
+ <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+  <span class="conf">NOVO · IA GRATUITA</span><span style="color:#8eaa96;font-size:12px">Demucs ONNX · processamento no navegador</span>
+ </div>
+ <h2 style="margin-top:12px">🎚️ Separar música em pistas reais</h2>
+ <p>Use o separador gratuito baseado em Demucs para extrair <b>voz, bateria, baixo e outros instrumentos</b>. O processamento acontece no navegador, sem assinatura de API.</p>
+ <div class="stats" style="grid-template-columns:repeat(2,minmax(0,1fr));margin:14px 0">
+  <div class="stat"><small>PISTAS DISPONÍVEIS</small><strong>4 stems</strong><span class="conf">Voz · Bateria · Baixo · Outros</span></div>
+  <div class="stat"><small>FORMATO DE SAÍDA</small><strong>WAV</strong><span class="conf">Arquivos individuais + ZIP</span></div>
+ </div>
+ <a href="https://joverval.cl/sdemux/" target="_blank" rel="noopener noreferrer" style="display:block;text-align:center;text-decoration:none;border-radius:12px;padding:15px 18px;background:#7aef9b;color:#102116;font-weight:900">Abrir separador IA gratuito ↗</a>
+ <p class="notice" style="margin-top:14px">Como usar: abra o separador, carregue a música, aguarde a separação e baixe o ZIP. Depois extraia os WAVs e volte aqui em <b>Áudios reais dos instrumentos → Adicionar faixas reais</b>. A importação automática e a sincronização direta com o mixer serão a próxima etapa.</p>
+ <p style="font-size:12px;color:#829b89;margin-bottom:0">Projeto open-source sdemux · Demucs ONNX · licença MIT. No iPhone, comece com uma música curta; a memória e a velocidade variam conforme o aparelho e o navegador.</p>
+</section>
+
 <script>(()=>{const I=[['🎸','Violão'],['🎸','Guitarra'],['🎸','Contrabaixo'],['🪕','Cavaquinho'],['🪕','Banjo'],['🥁','Bateria'],['🪘','Percussão'],['🎷','Sopro']],p=document.getElementById('acompanhamento'),l=document.getElementById('instrumentList'),s=document.getElementById('bandStatus');
 I.forEach(x=>{const r=document.createElement('div');r.style='display:grid;grid-template-columns:28px 1fr 90px 88px;align-items:center;gap:9px;background:#26382b;border-radius:14px;padding:11px';r.innerHTML='<span>'+x[0]+'</span><b>'+x[1]+'</b><input type="range" min="0" max="100" value="75" aria-label="Volume '+x[1]+'"><div class="mixerBtns"><button class="secondary" data-mute>M</button><button class="secondary" data-solo>S</button><button class="secondary" data-on>ON</button></div>';l.appendChild(r)});
 l.onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.on!==undefined){const on=b.textContent==='ON';b.textContent=on?'OFF':'ON';b.style.opacity=on?.55:1}if(b.dataset.mute!==undefined)b.classList.toggle('active');if(b.dataset.solo!==undefined)b.classList.toggle('active')};
